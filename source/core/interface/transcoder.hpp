@@ -32,7 +32,8 @@
 // The Part 1 code-blocks are decoded to their quantisation indices and the indices are coded
 // again with the HT block coder.  There is no wavelet transform, no re-quantisation and no
 // colour transform, so the image a decoder reconstructs from the result is the one it
-// reconstructs from the input.  The marker segments that describe the image (SIZ, QCD, QCC,
+// reconstructs from the input, except for code-blocks that a lossy Part 1 encoder cut
+// part-way through a bit-plane (see transcode_partial_plane).  The marker segments that describe the image (SIZ, QCD, QCC,
 // COM, tiling, precincts, progression order, SOP/EPH) are kept; the code-block style becomes HT,
 // the CAP marker segment is added, and the packets are written again, with one quality layer.
 //
@@ -48,7 +49,32 @@
 #include "decoder.hpp"  // OPENHTJ2K_EXPORT
 
 namespace open_htj2k {
+// A Part 1 code-block is coded down to some pass.  When that is a cleanup pass, every sample
+// is known down to that bit-plane, and the HT block coder codes the block at that plane: the
+// HT decoder's bin centre then equals the Part 1 mid-point, so the reconstruction is the same
+// and the bit-planes below the cut cost nothing.  When the last pass is a SigProp or MagRef
+// pass, the block ends part-way through a bit-plane, which one HT cleanup pass cannot hold.
+enum class transcode_partial_plane {
+  keep,  // code the indices to the last bit, partial plane included (reconstruction off by half a step)
+  drop   // code the block at its last complete cleanup plane and drop the partial plane
+};
+
+// What the code-blocks that had coding passes were found to end with.
+struct transcode_stats {
+  uint64_t blocks  = 0;  // code-blocks with coding passes
+  uint64_t full    = 0;  // decoded to the last bit-plane, ending on a cleanup pass
+  uint64_t coarser = 0;  // ending on a cleanup pass above the last bit-plane
+  uint64_t partial = 0;  // ending part-way through a bit-plane
+};
+
+struct transcode_options {
+  transcode_partial_plane partial_plane = transcode_partial_plane::keep;
+  transcode_stats *stats                = nullptr;  // optional: receives the block statistics
+};
+
 // Transcodes the Part 1 codestream [in, in + in_len) into the HTJ2K codestream `out`.
 // Returns the size of `out`.  Throws std::exception on input it cannot transcode.
 OPENHTJ2K_EXPORT size_t transcode_part1_to_htj2k(const uint8_t *in, size_t in_len, std::vector<uint8_t> &out);
+OPENHTJ2K_EXPORT size_t transcode_part1_to_htj2k(const uint8_t *in, size_t in_len, std::vector<uint8_t> &out,
+                                                 const transcode_options &options);
 }  // namespace open_htj2k
