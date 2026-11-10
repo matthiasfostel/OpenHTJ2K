@@ -64,6 +64,8 @@ void transcode_block(j2k_codeblock *bin, j2k_codeblock *bout, scratch_t &sc,
 
   uint32_t or_val = 0;
   uint32_t p_c    = 0;  // bit-plane (above the index LSB) the HT cleanup pass is coded at
+  bool refine     = false;  // the partial plane goes into HT SigProp (and MagRef) passes
+  bool sp_only    = false;  // ... and the Part 1 block ended after its SigProp pass
   if (bin->num_passes > 0 && bin->get_compressed_data() != nullptr) {
     sc.dec.assign(static_cast<size_t>(stride) * QH, 0);
     sc.ctx.assign(static_cast<size_t>(QH / 4 + 2) * (stride + 2), 0);
@@ -101,22 +103,56 @@ void transcode_block(j2k_codeblock *bin, j2k_codeblock *bout, scratch_t &sc,
     } else {
       ++stats.coarser;
     }
-    // Ending on a cleanup pass (or dropping the partial plane): code the block at that plane.
-    // Otherwise keep every decoded bit, down to plane 0.
-    if (!partial || opt.partial_plane == transcode_partial_plane::drop) p_c = static_cast<uint32_t>(last_pl);
+    // Ending on a cleanup pass, or dropping the partial plane, or carrying it in HT refinement
+    // passes: the HT cleanup pass is coded at that plane.  Otherwise (keep) every decoded bit is
+    // coded, down to plane 0.
+    if (!partial || opt.partial_plane != transcode_partial_plane::keep) p_c = static_cast<uint32_t>(last_pl);
+    // The HT set of cleanup at plane p, SigProp and MagRef of plane p - 1 is the Part 1 sequence
+    // cleanup, SigProp, MagRef of the plane below.  A block that ended after SigProp has the
+    // set cut there (the refinement segment up to the SigProp bits).
+    refine  = partial && opt.partial_plane == transcode_partial_plane::refine && p_c >= 1;
+    sp_only = refine && (n % 3 == 2);
 
-    // Index bit-plane p_c of the decoder's buffer is bit pLSB + p_c; the markers below it (the
-    // mid-point of the last plane) are shifted out.
-    const int32_t shift = pLSB + static_cast<int32_t>(p_c);
-    sc.enc.assign(static_cast<size_t>(stride) * QH, 0);
-    for (uint32_t y = 0; y < H; ++y) {
-      const uint32_t *sp = reinterpret_cast<const uint32_t *>(sc.dec.data()) + static_cast<size_t>(y) * stride;
-      int32_t *dp        = sc.enc.data() + static_cast<size_t>(y) * stride;
-      for (uint32_t x = 0; x < W; ++x) {
-        const uint32_t mu = (sp[x] & 0x7FFFFFFFu) >> shift;
-        or_val |= mu;
-        dp[x] = mu ? static_cast<int32_t>(0x80000000u | ((mu - 1) << 1) | (sp[x] >> 31)) : 0;
+    // Fills the encoder's samples from the decoded buffer: the magnitude is shifted down by
+    // `sh` bits (the bits below, the markers among them, are gone) and up again by `up`.
+    // Returns the largest magnitude.
+    auto fill = [&](int32_t sh, uint32_t up) -> uint32_t {
+      uint32_t mx = 0;
+      or_val      = 0;
+      sc.enc.assign(static_cast<size_t>(stride) * QH, 0);
+      for (uint32_t y = 0; y < H; ++y) {
+        const uint32_t *sp = reinterpret_cast<const uint32_t *>(sc.dec.data()) + static_cast<size_t>(y) * stride;
+        int32_t *dp        = sc.enc.data() + static_cast<size_t>(y) * stride;
+        for (uint32_t x = 0; x < W; ++x) {
+          const uint32_t mu = ((sp[x] & 0x7FFFFFFFu) >> sh) << up;
+          or_val |= mu;
+          mx = std::max(mx, mu);
+          dp[x] = mu ? static_cast<int32_t>(0x80000000u | ((mu - 1) << 1) | (sp[x] >> 31)) : 0;
+        }
       }
+      return mx;
+    };
+
+    if (refine) {
+      // Index bit-plane q = p_c - 1 of the decoder's buffer is bit pLSB + q.  The samples keep
+      // their bits down to q, which the SigProp and MagRef passes code; the Part 1 mid-point
+      // markers below q are cleared.
+      const uint32_t q  = p_c - 1;
+      const uint32_t mx = fill(pLSB + static_cast<int32_t>(q), q);
+      // The HT encoder keeps the cleanup plane below the block's top bit-plane (and within M_b);
+      // a block that does not allow p_c cannot be coded as a set, and drops the plane instead.
+      const uint32_t msb = mx ? 32u - count_leading_zeros(mx) : 0u;
+      if (p_c + 1 > std::min(msb, static_cast<uint32_t>(Mb))) {
+        refine  = false;
+        sp_only = false;
+      }
+    }
+    if (refine) {
+      ++stats.refined;
+    } else {
+      // Index bit-plane p_c of the decoder's buffer is bit pLSB + p_c; the markers below it (the
+      // mid-point of the last plane) are shifted out.
+      fill(pLSB + static_cast<int32_t>(p_c), 0);
     }
     bin->sample_buf     = nullptr;
     bin->block_contexts = nullptr;
@@ -126,8 +162,34 @@ void transcode_block(j2k_codeblock *bin, j2k_codeblock *bout, scratch_t &sc,
   bout->blksampl_stride   = stride;
   bout->pre_quantized     = true;
   bout->pre_or_val        = or_val ? 1 : 0;
-  bout->ht_refine_planes  = 0;
+  bout->ht_refine_planes  = refine ? static_cast<uint8_t>(p_c) : 0;
   bout->refsegment        = false;
+  if (refine) {
+    // Cleanup at plane p_c, then SigProp and MagRef of plane p_c - 1 in one refinement segment;
+    // the encoder signals num_ZBP = M_b - 1 - p_c itself.
+    ht_refinement_info rinfo;
+    htj2k_encode_refined(bout, 0, &rinfo);
+    bout->sample_buf = nullptr;
+    bout->ht_refine_planes = 0;
+    if (sp_only && bout->num_passes == 3) {
+      // The Part 1 block ended after its SigProp pass: keep the cleanup segment and the
+      // refinement segment as far as the SigProp bits, whose last byte stands alone (the cut
+      // rate control makes).  Without SigProp bits it is the cleanup pass alone.
+      const uint32_t Lref = bout->pass_length[2];
+      const uint32_t Lcup = bout->length - Lref;
+      const uint8_t passes = (rinfo.Lsp != 0) ? 2 : 1;
+      bout->layer_start[0]    = 0;
+      bout->layer_passes[0]   = passes;
+      bout->num_passes        = passes;
+      bout->pass_length[0]    = Lcup;
+      bout->pass_length[1]    = (passes == 2) ? rinfo.Lsp : 0;
+      bout->pass_length[2]    = 0;
+      bout->pass_length_count = passes;
+      bout->length            = Lcup + ((passes == 2) ? rinfo.Lsp : 0);
+      if (passes == 2) bout->get_compressed_data()[Lcup + rinfo.Lsp - 1] = rinfo.sp_tail;
+    }
+    return;
+  }
   encode_codeblock(bout, 0);
   bout->sample_buf = nullptr;
   // The cleanup pass codes the magnitudes of the shifted indices, whatever plane they stand for;

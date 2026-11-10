@@ -46,10 +46,12 @@ static void usage(const char *prog) {
       "  codestream with the same quantisation indices (EXPERIMENTAL).\n"
       "  -i  input raw codestream (.j2c / .j2k)\n"
       "  -o  output raw codestream (.j2c / .jhc)\n"
-      "  -partial keep|drop  a code-block that the Part 1 encoder cut part-way through a\n"
-      "      bit-plane: keep = code every decoded bit (default; reconstruction is off by half a\n"
-      "      step, and the output is larger), drop = code the block at its last complete cleanup\n"
-      "      plane and drop the partial plane. Blocks cut after a cleanup pass are exact either way.\n"
+      "  -partial refine|drop|keep  a code-block that the Part 1 encoder cut part-way through a\n"
+      "      bit-plane: refine = code the block at its last complete cleanup plane plus HT\n"
+      "      SigProp/MagRef passes for the partial one (default; exact), drop = code it at that\n"
+      "      plane and drop the partial plane (smallest, lossy), keep = code every decoded bit\n"
+      "      (reconstruction off by half a step, and a much larger output). Blocks cut after a\n"
+      "      cleanup pass are exact in all modes.\n"
       "  -h  this help\n",
       prog);
 }
@@ -74,8 +76,10 @@ int main(int argc, char *argv[]) {
         opt.partial_plane = open_htj2k::transcode_partial_plane::keep;
       } else if (std::strcmp(v, "drop") == 0) {
         opt.partial_plane = open_htj2k::transcode_partial_plane::drop;
+      } else if (std::strcmp(v, "refine") == 0) {
+        opt.partial_plane = open_htj2k::transcode_partial_plane::refine;
       } else {
-        std::printf("ERROR: -partial takes keep or drop, not %s\n", v);
+        std::printf("ERROR: -partial takes keep, drop or refine, not %s\n", v);
         return EXIT_FAILURE;
       }
     } else {
@@ -117,9 +121,10 @@ int main(int argc, char *argv[]) {
   std::printf("Input (Part 1)   = %zu bytes\nOutput (HTJ2K)   = %zu bytes (%.1f%% of input)\n", in.size(),
               out.size(), 100.0 * static_cast<double>(out.size()) / static_cast<double>(in.size()));
   std::printf("Code-blocks with passes = %llu: %llu full, %llu cut after a cleanup pass above the LSB, %llu cut "
-              "part-way through a bit-plane\n",
+              "part-way through a bit-plane (%llu coded with HT refinement passes)\n",
               static_cast<unsigned long long>(stats.blocks), static_cast<unsigned long long>(stats.full),
-              static_cast<unsigned long long>(stats.coarser), static_cast<unsigned long long>(stats.partial));
+              static_cast<unsigned long long>(stats.coarser), static_cast<unsigned long long>(stats.partial),
+              static_cast<unsigned long long>(stats.refined));
   std::printf("elapsed time %.3f [ms]\n",
               std::chrono::duration<double, std::milli>(t1 - t0).count());
   return EXIT_SUCCESS;
