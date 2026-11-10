@@ -32,8 +32,8 @@
 // The Part 1 code-blocks are decoded to their quantisation indices and the indices are coded
 // again with the HT block coder.  There is no wavelet transform, no re-quantisation and no
 // colour transform, so the image a decoder reconstructs from the result is the one it
-// reconstructs from the input, except for code-blocks that a lossy Part 1 encoder cut
-// part-way through a bit-plane (see transcode_partial_plane).  The marker segments that describe the image (SIZ, QCD, QCC,
+// reconstructs from the input (also for code-blocks that a lossy Part 1 encoder cut part-way
+// through a bit-plane, unless transcode_partial_plane::keep or drop is chosen).  The marker segments that describe the image (SIZ, QCD, QCC,
 // COM, tiling, precincts, progression order, SOP/EPH) are kept; the code-block style becomes HT,
 // the CAP marker segment is added, and the packets are written again, with one quality layer.
 //
@@ -55,8 +55,10 @@ namespace open_htj2k {
 // and the bit-planes below the cut cost nothing.  When the last pass is a SigProp or MagRef
 // pass, the block ends part-way through a bit-plane, which one HT cleanup pass cannot hold.
 enum class transcode_partial_plane {
-  keep,  // code the indices to the last bit, partial plane included (reconstruction off by half a step)
-  drop   // code the block at its last complete cleanup plane and drop the partial plane
+  keep,   // code the indices to the last bit, partial plane included (reconstruction off by half a step)
+  drop,   // code the block at its last complete cleanup plane and drop the partial plane
+  refine  // (default) code the block at its last complete cleanup plane and the partial plane with HT
+          // SigProp (and MagRef) passes, the way the Part 1 passes were cut: the reconstruction is exact
 };
 
 // What the code-blocks that had coding passes were found to end with.
@@ -65,10 +67,11 @@ struct transcode_stats {
   uint64_t full    = 0;  // decoded to the last bit-plane, ending on a cleanup pass
   uint64_t coarser = 0;  // ending on a cleanup pass above the last bit-plane
   uint64_t partial = 0;  // ending part-way through a bit-plane
+  uint64_t refined = 0;  // of those, the blocks coded with HT refinement passes (refine mode)
 };
 
 struct transcode_options {
-  transcode_partial_plane partial_plane = transcode_partial_plane::keep;
+  transcode_partial_plane partial_plane = transcode_partial_plane::refine;
   transcode_stats *stats                = nullptr;  // optional: receives the block statistics
 };
 
