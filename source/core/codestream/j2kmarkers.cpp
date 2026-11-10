@@ -1037,6 +1037,8 @@ QCD_marker::QCD_marker(j2c_src_memory &in) : j2k_marker_io_base(_QCD), Sqcd(0) {
   Sqcd         = get_byte();
   len++;
   check_quantization_style("QCD", Sqcd, Lmar - len);
+  // write() and get_MAGB() depend on it: SPqcd entries are bytes when there is no quantization.
+  is_reversible = ((Sqcd & 0x1F) == 0);
   if ((Sqcd & 0x1F) == 0) {
     // reversible transform
     const size_t splen = static_cast<size_t>(Lmar - len);
@@ -1262,6 +1264,7 @@ QCC_marker::QCC_marker(j2c_src_memory &in, uint16_t Csiz) : j2k_marker_io_base(_
   Sqcc = get_byte();
   len++;
   check_quantization_style("QCC", Sqcc, Lmar - len);
+  is_reversible = ((Sqcc & 0x1F) == 0);
   if ((Sqcc & 0x1F) == 0) {
     // reversible transform
     for (size_t i = 0; i < static_cast<size_t>(Lmar - len); ++i) {
