@@ -55,13 +55,15 @@ struct scratch_t {
 
 // Decodes the Part 1 code-block `bin` to its quantisation indices and codes them with the HT
 // block coder into `bout`, the same code-block of the output tile.
-void transcode_block(j2k_codeblock *bin, j2k_codeblock *bout, scratch_t &sc) {
+void transcode_block(j2k_codeblock *bin, j2k_codeblock *bout, scratch_t &sc,
+                     const transcode_options &opt, transcode_stats &stats) {
   const uint32_t W      = bin->size.x;
   const uint32_t H      = bin->size.y;
   const uint32_t stride = round_up(W, 8U);
   const uint32_t QH     = round_up(H, 8U);
 
   uint32_t or_val = 0;
+  uint32_t p_c    = 0;  // bit-plane (above the index LSB) the HT cleanup pass is coded at
   if (bin->num_passes > 0 && bin->get_compressed_data() != nullptr) {
     sc.dec.assign(static_cast<size_t>(stride) * QH, 0);
     sc.ctx.assign(static_cast<size_t>(QH / 4 + 2) * (stride + 2), 0);
@@ -77,14 +79,41 @@ void transcode_block(j2k_codeblock *bin, j2k_codeblock *bout, scratch_t &sc) {
     // a truncated stream decoded to a coarser bit-plane, and stays in the index.
     // The HT encoder takes 0x80000000 | ((m - 1) << 1) | sign for an index m > 0, in a buffer
     // padded to multiples of 8 in both directions.
-    const int32_t pLSB = 31 - static_cast<int32_t>(bin->get_Mb());
+    const int32_t Mb   = static_cast<int32_t>(bin->get_Mb());
+    const int32_t pLSB = 31 - Mb;
     if (pLSB < 0) open_htj2k::detail::fail("transcoder: a sub-band has more than 31 magnitude bit-planes.");
+
+    // The passes are the cleanup pass of the first bit-plane, then SigProp, MagRef and cleanup
+    // for each further one.  After n passes the cleanup passes of (n + 2) / 3 bit-planes are
+    // done, so every sample is known down to the bit-plane `last_plane` (an index bit-plane,
+    // 0 being the LSB); a block that ends on its SigProp or MagRef pass has some samples known
+    // one plane further.
+    const uint32_t n      = bin->num_passes;
+    const int32_t planes  = static_cast<int32_t>((n + 2) / 3);
+    const int32_t last_pl = Mb - static_cast<int32_t>(bin->num_ZBP) - planes;
+    if (last_pl < 0) open_htj2k::detail::fail("transcoder: a code-block has more passes than bit-planes.");
+    const bool partial = ((n - 1) % 3) != 0;
+    ++stats.blocks;
+    if (partial) {
+      ++stats.partial;
+    } else if (last_pl == 0) {
+      ++stats.full;
+    } else {
+      ++stats.coarser;
+    }
+    // Ending on a cleanup pass (or dropping the partial plane): code the block at that plane.
+    // Otherwise keep every decoded bit, down to plane 0.
+    if (!partial || opt.partial_plane == transcode_partial_plane::drop) p_c = static_cast<uint32_t>(last_pl);
+
+    // Index bit-plane p_c of the decoder's buffer is bit pLSB + p_c; the markers below it (the
+    // mid-point of the last plane) are shifted out.
+    const int32_t shift = pLSB + static_cast<int32_t>(p_c);
     sc.enc.assign(static_cast<size_t>(stride) * QH, 0);
     for (uint32_t y = 0; y < H; ++y) {
       const uint32_t *sp = reinterpret_cast<const uint32_t *>(sc.dec.data()) + static_cast<size_t>(y) * stride;
       int32_t *dp        = sc.enc.data() + static_cast<size_t>(y) * stride;
       for (uint32_t x = 0; x < W; ++x) {
-        const uint32_t mu = (sp[x] & 0x7FFFFFFFu) >> pLSB;
+        const uint32_t mu = (sp[x] & 0x7FFFFFFFu) >> shift;
         or_val |= mu;
         dp[x] = mu ? static_cast<int32_t>(0x80000000u | ((mu - 1) << 1) | (sp[x] >> 31)) : 0;
       }
@@ -101,6 +130,10 @@ void transcode_block(j2k_codeblock *bin, j2k_codeblock *bout, scratch_t &sc) {
   bout->refsegment        = false;
   encode_codeblock(bout, 0);
   bout->sample_buf = nullptr;
+  // The cleanup pass codes the magnitudes of the shifted indices, whatever plane they stand for;
+  // the plane only enters through the number of missing MSBs the packet header signals,
+  // M_b - 1 - p (ISO/IEC 15444-15, 7.6; the same as the encoder's refinement path sets).
+  if (p_c > 0 && bout->num_passes > 0) bout->num_ZBP = static_cast<uint8_t>(bout->get_Mb() - 1 - p_c);
 }
 
 // Calls fn(block_in, block_out) for every code-block, the two tiles being of the same structure.
@@ -217,6 +250,12 @@ void read_main_header(j2c_src_memory &src, const uint8_t *data, size_t len, j2k_
 }  // namespace
 
 size_t transcode_part1_to_htj2k(const uint8_t *in, size_t in_len, std::vector<uint8_t> &out) {
+  return transcode_part1_to_htj2k(in, in_len, out, transcode_options());
+}
+
+size_t transcode_part1_to_htj2k(const uint8_t *in, size_t in_len, std::vector<uint8_t> &out,
+                                const transcode_options &options) {
+  transcode_stats stats;
   if (in == nullptr || in_len < 4 || in[0] != 0xFF || in[1] != 0x4F) {
     open_htj2k::detail::fail("transcoder: the input is not a raw JPEG 2000 codestream (no SOC marker).");
   }
@@ -277,7 +316,8 @@ size_t transcode_part1_to_htj2k(const uint8_t *in, size_t in_len, std::vector<ui
   // Code-blocks.
   scratch_t sc;
   for (uint32_t i = 0; i < num_tiles; ++i) {
-    for_each_block_pair(tin[i], tout[i], [&](j2k_codeblock *bi, j2k_codeblock *bo) { transcode_block(bi, bo, sc); });
+    for_each_block_pair(tin[i], tout[i],
+                        [&](j2k_codeblock *bi, j2k_codeblock *bo) { transcode_block(bi, bo, sc, options, stats); });
     tout[i].build_packet_headers();
   }
 
@@ -312,6 +352,7 @@ size_t transcode_part1_to_htj2k(const uint8_t *in, size_t in_len, std::vector<ui
   for (uint32_t i = 0; i < num_tiles; ++i) p += tout[i].write_packets_direct(hout, p);
   p[0] = 0xFF;
   p[1] = 0xD9;
+  if (options.stats != nullptr) *options.stats = stats;
   return total;
 }
 
