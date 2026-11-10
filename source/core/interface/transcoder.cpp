@@ -37,6 +37,7 @@
 #include <memory>
 #include <vector>
 #include "transcoder.hpp"
+#include "jph.hpp"
 #include "coding_units.hpp"
 #include "block_decoding.hpp"
 #include "message_internal.hpp"
@@ -318,6 +319,44 @@ void read_main_header(j2c_src_memory &src, const uint8_t *data, size_t len, j2k_
   src.rewind_2bytes();
 }
 
+
+uint32_t be32(const uint8_t *p) {
+  return (uint32_t(p[0]) << 24) | (uint32_t(p[1]) << 16) | (uint32_t(p[2]) << 8) | uint32_t(p[3]);
+}
+
+// The boxes of a JP2 file that the JPH file keeps: those before the codestream box (the
+// signature box, the file type box and the codestream box excepted) go to `pre`, those after it to
+// `post`.  Only the top level is walked; a box is copied as it is, header included.
+void collect_file_boxes(const uint8_t *buf, size_t len, std::vector<uint8_t> &pre, std::vector<uint8_t> &post) {
+  const uint8_t *p = buf, *end = buf + len;
+  bool seen_jp2c   = false;
+  while (static_cast<size_t>(end - p) >= 8) {
+    const size_t remaining = static_cast<size_t>(end - p);
+    const uint32_t lbox    = be32(p);
+    const uint32_t tbox    = be32(p + 4);
+    size_t blen;
+    if (lbox == 1) {
+      if (remaining < 16) break;
+      uint64_t x = 0;
+      for (int i = 0; i < 8; ++i) x = (x << 8) | p[8 + i];
+      if (x < 16 || x > remaining) break;
+      blen = static_cast<size_t>(x);
+    } else if (lbox == 0) {
+      blen = remaining;
+    } else {
+      if (lbox < 8) break;
+      blen = (lbox <= remaining) ? lbox : remaining;
+    }
+    if (tbox == 0x6A703263u) {  // jp2c
+      seen_jp2c = true;
+    } else if (tbox != 0x6A502020u && tbox != 0x66747970u) {  // not jP, ftyp
+      std::vector<uint8_t> &dst = seen_jp2c ? post : pre;
+      dst.insert(dst.end(), p, p + blen);
+    }
+    p += blen;
+  }
+}
+
 }  // namespace
 
 size_t transcode_part1_to_htj2k(const uint8_t *in, size_t in_len, std::vector<uint8_t> &out) {
@@ -327,8 +366,17 @@ size_t transcode_part1_to_htj2k(const uint8_t *in, size_t in_len, std::vector<ui
 size_t transcode_part1_to_htj2k(const uint8_t *in, size_t in_len, std::vector<uint8_t> &out,
                                 const transcode_options &options) {
   transcode_stats stats;
+  // A JP2 file: transcode its codestream, keep its other boxes for a JPH output.
+  const uint8_t *file_in = in;
+  const size_t file_len  = in_len;
+  jph_info finfo;
+  const bool is_file = (in != nullptr) && jph_parse_buffer(in, in_len, finfo);
+  if (is_file) {
+    in     = finfo.cs_data;
+    in_len = finfo.cs_size;
+  }
   if (in == nullptr || in_len < 4 || in[0] != 0xFF || in[1] != 0x4F) {
-    open_htj2k::detail::fail("transcoder: the input is not a raw JPEG 2000 codestream (no SOC marker).");
+    open_htj2k::detail::fail("transcoder: the input is neither a JP2/JPH file nor a raw JPEG 2000 codestream.");
   }
 
   // Input: main header and tiles with their packets parsed.  Nothing is decoded here.
@@ -477,13 +525,45 @@ size_t transcode_part1_to_htj2k(const uint8_t *in, size_t in_len, std::vector<ui
   total += 2;
   std::vector<uint8_t> hdr_bytes;
   hdr_buf.flush(&hdr_bytes);
+
+  // JPH output: the boxes in front of the codestream and after it.
+  std::vector<uint8_t> file_pre, file_post;
+  if (options.jph_output) {
+    if (is_file) {
+      j2c_dst_memory sig_buf;
+      signature_box sig;
+      file_type_box ftyp(1);  // brand 'jph '
+      sig.write(sig_buf);
+      ftyp.write(sig_buf);
+      sig_buf.flush(&file_pre);
+      std::vector<uint8_t> mid;
+      collect_file_boxes(file_in, file_len, mid, file_post);
+      file_pre.insert(file_pre.end(), mid.begin(), mid.end());
+      uint8_t jp2c[16];
+      const size_t n = jp2c_box_header(total, jp2c);
+      file_pre.insert(file_pre.end(), jp2c, jp2c + n);
+    } else {
+      // A raw codestream: boxes made as the encoder makes them; sRGB for three or more
+      // components, grayscale otherwise.
+      j2c_dst_memory box_buf;
+      jph_boxes boxes(hout, 1, hout.SIZ->get_num_components() >= 3, total);
+      boxes.write(box_buf);
+      box_buf.flush(&file_pre);
+    }
+  }
+  const size_t total_cs = total;
+  total += file_pre.size() + file_post.size();
   out.resize(total);
-  uint8_t *p = out.data();
+  std::memcpy(out.data(), file_pre.data(), file_pre.size());
+  uint8_t *p = out.data() + file_pre.size();
   std::memcpy(p, hdr_bytes.data(), hdr_bytes.size());
   p += hdr_bytes.size();
   for (uint32_t i = 0; i < num_tiles; ++i) p += tout[i].write_packets_direct(hout, p);
   p[0] = 0xFF;
   p[1] = 0xD9;
+  p += 2;
+  std::memcpy(p, file_post.data(), file_post.size());
+  (void)total_cs;
   if (options.stats != nullptr) *options.stats = stats;
   return total;
 }

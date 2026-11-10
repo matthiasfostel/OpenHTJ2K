@@ -30,6 +30,7 @@
 
 #include <chrono>
 #include <cstdio>
+#include <cctype>
 #include <cstdlib>
 #include <cstring>
 #include <exception>
@@ -45,8 +46,10 @@ static void usage(const char *prog) {
       "Usage: %s -i <input.j2c> -o <output.j2c>\n"
       "  Transcodes a JPEG 2000 Part 1 (EBCOT/MQ) codestream into an HTJ2K (Part 15)\n"
       "  codestream with the same quantisation indices (EXPERIMENTAL).\n"
-      "  -i  input raw codestream (.j2c / .j2k)\n"
-      "  -o  output raw codestream (.j2c / .jhc)\n"
+      "  -i  input: raw codestream (.j2c / .j2k) or JP2 file (.jp2), found by its signature\n"
+      "  -o  output: raw codestream (.j2c / .jhc) or JPH file (.jph). For a JP2 input the .jph file\n"
+      "      keeps the boxes of the input (colour, resolution, XML, ...); for a raw codestream they\n"
+      "      are made as open_htj2k_enc makes them (sRGB for 3 or more components, else grayscale)\n"
       "  -partial refine|drop|keep  a code-block that the Part 1 encoder cut part-way through a\n"
       "      bit-plane: refine = code the block at its last complete cleanup plane plus HT\n"
       "      SigProp/MagRef passes for the partial one (default; exact), drop = code it at that\n"
@@ -96,6 +99,18 @@ int main(int argc, char *argv[]) {
   if (in_name.empty() || out_name.empty()) {
     usage(argv[0]);
     return EXIT_FAILURE;
+  }
+
+  {
+    const size_t dot = out_name.find_last_of('.');
+    std::string ext  = dot == std::string::npos ? "" : out_name.substr(dot);
+    for (char &ch : ext) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+    if (ext == ".jph") {
+      opt.jph_output = true;
+    } else if (ext == ".jp2") {
+      std::printf("ERROR: an HTJ2K codestream cannot be in a JP2 file; write .jph (or .j2c / .jhc)\n");
+      return EXIT_FAILURE;
+    }
   }
 
   std::ifstream ifs(in_name, std::ios::in | std::ios::binary);

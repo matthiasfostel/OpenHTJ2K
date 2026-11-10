@@ -37,8 +37,13 @@
 // COM, tiling, precincts, progression order, SOP/EPH) are kept; the code-block style becomes HT,
 // the CAP marker segment is added, and the packets are written again, with one quality layer.
 //
+// The input is a raw codestream or a JP2/JPH file (found by its signature box).  With
+// transcode_options::jph_output the result is a JPH file: the boxes of a JP2 input (image header,
+// colour, resolution, XML, ...) are kept, the file type box gets the brand 'jph '; a raw codestream
+// gets boxes made the way the encoder makes them.
+//
 // Prototype limits (the function throws, with a message, when the input has one):
-//   raw codestream input (no JP2 file format), no COC, RGN, POC, PPM, DFS or ATK marker
+//   no COC, RGN, POC, PPM, DFS or ATK marker
 //   segments, no tile-part header COD/QCD/COC/QCC overrides, Part 1 block coder input.
 
 #pragma once
@@ -73,6 +78,7 @@ struct transcode_stats {
 struct transcode_options {
   transcode_partial_plane partial_plane = transcode_partial_plane::refine;
   transcode_stats *stats                = nullptr;  // optional: receives the block statistics
+  bool jph_output                       = false;    // write a JPH file (ISO/IEC 15444-15) instead of the codestream alone
   unsigned num_threads                  = 0;        // code-block worker threads; 0 = all hardware threads, 1 = none
 };
 
