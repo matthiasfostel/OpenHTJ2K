@@ -30,6 +30,7 @@
 
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <exception>
 #include <fstream>
@@ -52,6 +53,8 @@ static void usage(const char *prog) {
       "      plane and drop the partial plane (smallest, lossy), keep = code every decoded bit\n"
       "      (reconstruction off by half a step, and a much larger output). Blocks cut after a\n"
       "      cleanup pass are exact in all modes.\n"
+      "  -num_threads N  worker threads for the code-block loop (0 = all hardware threads, default;\n"
+      "      1 = single-threaded). The output is identical for every N.\n"
       "  -h  this help\n",
       prog);
 }
@@ -82,6 +85,8 @@ int main(int argc, char *argv[]) {
         std::printf("ERROR: -partial takes keep, drop or refine, not %s\n", v);
         return EXIT_FAILURE;
       }
+    } else if (std::strcmp(argv[i], "-num_threads") == 0 && i + 1 < argc) {
+      opt.num_threads = static_cast<unsigned>(std::strtoul(argv[++i], nullptr, 10));
     } else {
       std::printf("ERROR: unknown or incomplete option %s\n", argv[i]);
       usage(argv[0]);

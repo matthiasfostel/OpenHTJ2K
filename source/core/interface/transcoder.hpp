@@ -73,6 +73,7 @@ struct transcode_stats {
 struct transcode_options {
   transcode_partial_plane partial_plane = transcode_partial_plane::refine;
   transcode_stats *stats                = nullptr;  // optional: receives the block statistics
+  unsigned num_threads                  = 0;        // code-block worker threads; 0 = all hardware threads, 1 = none
 };
 
 // Transcodes the Part 1 codestream [in, in + in_len) into the HTJ2K codestream `out`.

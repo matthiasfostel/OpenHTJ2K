@@ -27,6 +27,12 @@
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #include <algorithm>
+#include <atomic>
+#include <exception>
+#include <functional>
+#include <mutex>
+#include <thread>
+#include <utility>
 #include <cstring>
 #include <memory>
 #include <vector>
@@ -34,6 +40,9 @@
 #include "coding_units.hpp"
 #include "block_decoding.hpp"
 #include "message_internal.hpp"
+#ifdef OPENHTJ2K_THREAD
+  #include "ThreadPool.hpp"
+#endif
 
 namespace open_htj2k {
 namespace {
@@ -375,12 +384,73 @@ size_t transcode_part1_to_htj2k(const uint8_t *in, size_t in_len, std::vector<ui
   std::unique_ptr<j2k_tile[]> tout(new j2k_tile[num_tiles]);
   for (uint32_t i = 0; i < num_tiles; ++i) tout[i].enc_init(static_cast<uint16_t>(i), hout, empty_buf, true, true);
 
-  // Code-blocks.
-  scratch_t sc;
-  for (uint32_t i = 0; i < num_tiles; ++i) {
-    for_each_block_pair(tin[i], tout[i],
-                        [&](j2k_codeblock *bi, j2k_codeblock *bo) { transcode_block(bi, bo, sc, options, stats); });
-    tout[i].build_packet_headers();
+  // Code-blocks.  Each block is independent, so they run on the thread pool in fixed chunks; every
+  // chunk has its own statistics, summed in chunk order, so the output does not depend on the
+  // number of threads.
+  {
+#ifdef OPENHTJ2K_THREAD
+    ThreadPoolLease pool_lease;
+    ThreadPool *pool = options.num_threads == 1 ? nullptr : ThreadPool::instance(options.num_threads);
+#endif
+    for (uint32_t i = 0; i < num_tiles; ++i) {
+      std::vector<std::pair<j2k_codeblock *, j2k_codeblock *>> pairs;
+      for_each_block_pair(tin[i], tout[i],
+                          [&](j2k_codeblock *bi, j2k_codeblock *bo) { pairs.emplace_back(bi, bo); });
+      constexpr size_t CHUNK = 8;
+      const size_t nchunks   = (pairs.size() + CHUNK - 1) / CHUNK;
+      std::vector<transcode_stats> cstats(nchunks);
+      std::atomic<bool> failed{false};
+      std::exception_ptr error;
+      std::mutex error_mutex;
+      auto run_chunk = [&](size_t k) {
+        if (failed.load(std::memory_order_relaxed)) return;
+        thread_local scratch_t sc;
+        try {
+          const size_t end = std::min(pairs.size(), (k + 1) * CHUNK);
+          for (size_t j = k * CHUNK; j < end; ++j)
+            transcode_block(pairs[j].first, pairs[j].second, sc, options, cstats[k]);
+        } catch (...) {
+          std::lock_guard<std::mutex> lk(error_mutex);
+          if (!error) error = std::current_exception();
+          failed.store(true);
+        }
+      };
+      bool done = false;
+#ifdef OPENHTJ2K_THREAD
+      if (pool != nullptr && pool->num_threads() > 1 && nchunks > 1) {
+        std::atomic<size_t> next{0};
+        std::atomic<int> running{0};
+        auto drain = [&]() {
+          for (size_t k = next.fetch_add(1); k < nchunks; k = next.fetch_add(1)) run_chunk(k);
+        };
+        const int workers = static_cast<int>(std::min<size_t>(pool->num_threads(), nchunks));
+        running.store(workers, std::memory_order_relaxed);
+        for (int w = 0; w < workers; ++w) {
+          pool->push([&]() {
+            drain();
+            running.fetch_sub(1, std::memory_order_release);
+          });
+        }
+        drain();
+        while (running.load(std::memory_order_acquire) > 0) {
+          if (!pool->try_run_one()) std::this_thread::yield();
+        }
+        done = true;
+      }
+#endif
+      if (!done) {
+        for (size_t k = 0; k < nchunks; ++k) run_chunk(k);
+      }
+      if (error) std::rethrow_exception(error);
+      for (const transcode_stats &cs : cstats) {
+        stats.blocks += cs.blocks;
+        stats.full += cs.full;
+        stats.coarser += cs.coarser;
+        stats.partial += cs.partial;
+        stats.refined += cs.refined;
+      }
+      tout[i].build_packet_headers();
+    }
   }
 
   // The magnitude bound is known now.
