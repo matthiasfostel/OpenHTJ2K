@@ -421,6 +421,12 @@ if(OPENHTJ2K_BUILD_APPS)
                $<IF:$<CONFIG:Debug>,open_htj2k_enc_dbg,open_htj2k_enc>)
   target_link_libraries(open_htj2k_enc PUBLIC open_htj2k PRIVATE openhtj2k_internal openhtj2k_imgio)
 
+  # Part 1 (EBCOT/MQ) -> HTJ2K transcoder (EXPERIMENTAL)
+  add_executable(open_htj2k_transcode)
+  target_include_directories(open_htj2k_transcode PUBLIC source/core/interface)
+  add_subdirectory(source/apps/transcoder)
+  target_link_libraries(open_htj2k_transcode PUBLIC open_htj2k PRIVATE openhtj2k_internal)
+
   # Estimates the Qfactor used at encode time from a J2C codestream's QCD/QCC.
   add_executable(estimate_qfactor)
   add_subdirectory(source/apps/estimate_qfactor)
@@ -516,7 +522,7 @@ endif()
 # Install
 ################################################################################################
 if(OPENHTJ2K_BUILD_APPS)
-  install(TARGETS open_htj2k_dec open_htj2k_enc
+  install(TARGETS open_htj2k_dec open_htj2k_enc open_htj2k_transcode
     DESTINATION ${CMAKE_INSTALL_BINDIR})
 endif()
 install(TARGETS open_htj2k
