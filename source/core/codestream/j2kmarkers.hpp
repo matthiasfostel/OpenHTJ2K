@@ -245,6 +245,10 @@ class RGN_marker : public j2k_marker_io_base {
   RGN_marker(j2c_src_memory &in, uint16_t Csiz);
   uint16_t get_component_index() const;
   uint8_t get_ROIshift() const;
+  int write(j2c_dst_memory &dst);
+
+ private:
+  bool wide_crgn_ = false;  // Crgn is 16 bits (Csiz >= 257)
 };
 
 /********************************************************************************

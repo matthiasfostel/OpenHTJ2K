@@ -672,6 +672,7 @@ RGN_marker::RGN_marker(j2c_src_memory &in, uint16_t Csiz) : j2k_marker_io_base(_
   this->set_buf(in.get_buf_pos());
   in.get_N_byte(this->get_buf(), Lmar - 2U);
   uint16_t len = 2;  // tmp length including Lrgn
+  wide_crgn_   = (Csiz >= 257);
   if (Csiz < 257) {
     Crgn = get_byte();
     len++;
@@ -698,6 +699,19 @@ RGN_marker::RGN_marker(j2c_src_memory &in, uint16_t Csiz) : j2k_marker_io_base(_
     open_htj2k::detail::fail("RGN region-of-interest shift %u exceeds 31.", static_cast<unsigned>(SPrgn));
   }
   is_set = true;
+}
+
+int RGN_marker::write(j2c_dst_memory &dst) {
+  dst.put_word(code);
+  dst.put_word(static_cast<uint16_t>(wide_crgn_ ? 6 : 5));
+  if (wide_crgn_) {
+    dst.put_word(Crgn);
+  } else {
+    dst.put_byte(static_cast<uint8_t>(Crgn));
+  }
+  dst.put_byte(Srgn);
+  dst.put_byte(SPrgn);
+  return EXIT_SUCCESS;
 }
 
 uint16_t RGN_marker::get_component_index() const { return Crgn; }
@@ -1863,7 +1877,7 @@ void j2k_main_header::flush(j2c_dst_memory &buf) {
   }
   if (!RGN.empty()) {
     for (size_t i = 0; i < RGN.size(); ++i) {
-      // RGN[i]->write(buf);
+      RGN[i]->write(buf);
     }
   }
   // POC->write(buf);
