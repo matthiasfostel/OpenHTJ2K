@@ -42,9 +42,16 @@
 // colour, resolution, XML, ...) are kept, the file type box gets the brand 'jph '; a raw codestream
 // gets boxes made the way the encoder makes them.
 //
+// RGN (region of interest, Maxshift): the RGN marker segments are kept and the shifted indices are
+// coded as they are.  Reversible streams reconstruct exactly.  For a lossy stream the Part 1 decoder
+// takes every bit-plane of a region-of-interest block as decoded and its mid-point at half a step,
+// so those blocks are coded down to the last bit with that half step added to the coefficients of
+// the region; the HT decoder's own mid-point then leaves the result within about 2^-roi of a step per
+// coefficient of the image the Part 1 decoder gives (a few levels of 4095 at most in the tests).
+//
 // Prototype limits (the function throws, with a message, when the input has one):
 //   no RGN, DFS or ATK marker
-//   segments, no tile-part header RGN, Part 1 block coder input.
+//   segments, Part 1 block coder input.
 
 #pragma once
 

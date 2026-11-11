@@ -260,7 +260,7 @@ class j2k_codeblock : public j2k_region {
   uint8_t *compressed_data;
   uint8_t *current_address;
   const uint8_t band;
-  const uint8_t M_b;
+  uint8_t M_b;
   OPENHTJ2K_MAYBE_UNUSED const uint32_t index;
   // When true, compressed_data was bump-allocated by a cblk_data_pool owned by
   // j2k_tile. The destructor must NOT free it; the pool manages the lifetime.
@@ -355,6 +355,9 @@ class j2k_codeblock : public j2k_region {
   //  OPENHTJ2K_NODISCARD uint8_t get_context_label_sig(const uint32_t &j1, const uint32_t &j2) const;
   //  OPENHTJ2K_NODISCARD uint8_t get_signLUT_index(const uint32_t &j1, const uint32_t &j2) const;
   OPENHTJ2K_NODISCARD uint8_t get_Mb() const;
+  // A region-of-interest shift adds this many magnitude bit-planes to the block (the transcoder
+  // codes the shifted indices, so the HT block coder counts them in M_b).
+  void add_ROIshift(uint8_t s) { M_b = static_cast<uint8_t>(M_b + s); }
   uint8_t *get_compressed_data();
   // Rate control: take the compressed data out of the code-block (pooled: owned by a
   // cblk_data_pool, otherwise malloc'ed and now the caller's), or put data in.

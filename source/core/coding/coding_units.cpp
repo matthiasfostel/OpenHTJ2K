@@ -7262,6 +7262,7 @@ void j2k_tile::enc_init(uint16_t idx, j2k_main_header &main_header, std::vector<
     if (tile_override->QCD != nullptr) tphdr->QCD = MAKE_UNIQUE<QCD_marker>(*tile_override->QCD);
     for (const auto &c : tile_override->COC) tphdr->COC.push_back(MAKE_UNIQUE<COC_marker>(*c));
     for (const auto &q : tile_override->QCC) tphdr->QCC.push_back(MAKE_UNIQUE<QCC_marker>(*q));
+    for (const auto &g : tile_override->RGN) tphdr->RGN.push_back(MAKE_UNIQUE<RGN_marker>(*g));
   }
   // set coding style related properties from tile-part header
   if (tphdr->COD != nullptr) {

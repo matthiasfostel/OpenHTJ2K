@@ -65,8 +65,11 @@ struct scratch_t {
 
 // Decodes the Part 1 code-block `bin` to its quantisation indices and codes them with the HT
 // block coder into `bout`, the same code-block of the output tile.
-void transcode_block(j2k_codeblock *bin, j2k_codeblock *bout, scratch_t &sc,
+void transcode_block(j2k_codeblock *bin, j2k_codeblock *bout, uint8_t roi, scratch_t &sc,
                      const transcode_options &opt, transcode_stats &stats) {
+  // A region-of-interest shift (RGN) makes the indices `roi` bit-planes deeper; the block coder
+  // of the output counts them, and the RGN marker segment is kept for the decoder to undo them.
+  bout->add_ROIshift(roi);
   const uint32_t W      = bin->size.x;
   const uint32_t H      = bin->size.y;
   const uint32_t stride = round_up(W, 8U);
@@ -83,7 +86,7 @@ void transcode_block(j2k_codeblock *bin, j2k_codeblock *bout, scratch_t &sc,
     bin->blksampl_stride       = stride;
     bin->block_contexts        = sc.ctx.data();
     bin->block_contexts_stride = stride + 2;
-    j2k_decode_indices(bin, 0);
+    j2k_decode_indices(bin, roi);
 
     // The decoder holds a magnitude in Q(31 - M_b): its index is the sample shifted down by
     // pLSB = 31 - M_b (j2k_dequant does the same for the reversible transform).  A marker below
@@ -91,7 +94,7 @@ void transcode_block(j2k_codeblock *bin, j2k_codeblock *bout, scratch_t &sc,
     // a truncated stream decoded to a coarser bit-plane, and stays in the index.
     // The HT encoder takes 0x80000000 | ((m - 1) << 1) | sign for an index m > 0, in a buffer
     // padded to multiples of 8 in both directions.
-    const int32_t Mb   = static_cast<int32_t>(bin->get_Mb());
+    const int32_t Mb   = static_cast<int32_t>(bin->get_Mb()) + static_cast<int32_t>(roi);
     const int32_t pLSB = 31 - Mb;
     if (pLSB < 0) open_htj2k::detail::fail("transcoder: a sub-band has more than 31 magnitude bit-planes.");
 
@@ -123,6 +126,20 @@ void transcode_block(j2k_codeblock *bin, j2k_codeblock *bout, scratch_t &sc,
     refine  = partial && opt.partial_plane == transcode_partial_plane::refine && p_c >= 1;
     sp_only = refine && (n % 3 == 2);
 
+    // A lossy block with a region-of-interest shift is reconstructed by the Part 1 decoder with
+    // every bit-plane counted as decoded and the mid-point at half a step of the index m, whether
+    // the block was cut or not (a coefficient of the region is m * 2^roi in the stream).  The HT
+    // decoder puts the mid-point at half of the last coded bit of the shifted value instead, which
+    // is 2^-roi of a step for the coefficients of the region.  So the indices are coded down to
+    // the last bit, and a coefficient of the region gets the bit below its lowest one (roi - 1)
+    // set, which is that half step (the HT mid-point adds 2^-(roi+1) of a step on top of it).
+    const bool roi_lossy = roi > 0 && bin->transformation != 1;
+    if (roi_lossy) {
+      p_c     = 0;
+      refine  = false;
+      sp_only = false;
+    }
+
     // Fills the encoder's samples from the decoded buffer: the magnitude is shifted down by
     // `sh` bits (the bits below, the markers among them, are gone) and up again by `up`.
     // Returns the largest magnitude.
@@ -134,7 +151,8 @@ void transcode_block(j2k_codeblock *bin, j2k_codeblock *bout, scratch_t &sc,
         const uint32_t *sp = reinterpret_cast<const uint32_t *>(sc.dec.data()) + static_cast<size_t>(y) * stride;
         int32_t *dp        = sc.enc.data() + static_cast<size_t>(y) * stride;
         for (uint32_t x = 0; x < W; ++x) {
-          const uint32_t mu = ((sp[x] & 0x7FFFFFFFu) >> sh) << up;
+          uint32_t mu = ((sp[x] & 0x7FFFFFFFu) >> sh) << up;
+          if (roi_lossy && mu >= (1u << roi)) mu |= 1u << (roi - 1);
           or_val |= mu;
           mx = std::max(mx, mu);
           dp[x] = mu ? static_cast<int32_t>(0x80000000u | ((mu - 1) << 1) | (sp[x] >> 31)) : 0;
@@ -208,7 +226,7 @@ void transcode_block(j2k_codeblock *bin, j2k_codeblock *bout, scratch_t &sc,
   if (p_c > 0 && bout->num_passes > 0) bout->num_ZBP = static_cast<uint8_t>(bout->get_Mb() - 1 - p_c);
 }
 
-// Calls fn(block_in, block_out) for every code-block, the two tiles being of the same structure.
+// Calls fn(block_in, block_out, ROI shift of the component) for every code-block, the two tiles being of the same structure.
 template <typename Fn>
 void for_each_block_pair(j2k_tile &tin, j2k_tile &tout, Fn fn) {
   for (uint16_t c = 0; c < tin.get_num_components(); ++c) {
@@ -234,7 +252,10 @@ void for_each_block_pair(j2k_tile &tin, j2k_tile &tout, Fn fn) {
           if (n != pbo->num_codeblock_x * pbo->num_codeblock_y) {
             open_htj2k::detail::fail("transcoder: tile structures differ (code-blocks).");
           }
-          for (uint32_t i = 0; i < n; ++i) fn(pbi->access_codeblock(i), pbo->access_codeblock(i));
+          // No packet of this precinct-band was in the input, so its code-blocks were never made:
+          // they stay empty in the output as well.
+          if (n == 0 || pbi->access_codeblock(0) == nullptr) continue;
+          for (uint32_t i = 0; i < n; ++i) fn(pbi->access_codeblock(i), pbo->access_codeblock(i), tci->get_ROIshift());
         }
       }
     }
@@ -272,37 +293,12 @@ int32_t coded_magb(j2k_tile *tiles, uint32_t num_tiles) {
 }
 
 void check_supported(const j2k_main_header &h) {
-  if (!h.RGN.empty()) open_htj2k::detail::fail("transcoder: RGN (ROI) marker segments are not supported.");
   if (!h.DFS.empty() || !h.ATK.empty())
     open_htj2k::detail::fail("transcoder: Part 2 (DFS/ATK) marker segments are not supported yet.");
   if (h.COD == nullptr || h.QCD == nullptr || h.SIZ == nullptr)
     open_htj2k::detail::fail("transcoder: the main header lacks SIZ, COD or QCD.");
   if (h.COD->get_Cmodes() & HT)
     open_htj2k::detail::fail("transcoder: the input already uses the HT block coder.");
-}
-
-// Rejects a codestream whose tile-part headers hold RGN marker segments (a COD, COC, QCD or QCC
-// there is carried over to the output tile).  Walks the segments by their lengths.
-void check_tile_part_headers(const uint8_t *in, size_t len) {
-  auto u16 = [&](size_t p) -> uint32_t { return (static_cast<uint32_t>(in[p]) << 8) | in[p + 1]; };
-  size_t pos = 2;  // after SOC
-  while (pos + 4 <= len && u16(pos) != _SOT) pos += 2 + u16(pos + 2);  // main header segments
-  while (pos + 12 <= len && u16(pos) == _SOT) {
-    const size_t psot = (static_cast<size_t>(in[pos + 6]) << 24) | (static_cast<size_t>(in[pos + 7]) << 16)
-                        | (static_cast<size_t>(in[pos + 8]) << 8) | in[pos + 9];
-    const size_t end = (psot == 0) ? len : std::min(len, pos + psot);  // Psot 0: up to EOC
-    size_t p         = pos + 12;                                       // after the SOT segment
-    while (p + 4 <= end && u16(p) != _SOD) {
-      const uint32_t m = u16(p);
-      if (m == _RGN) {
-        open_htj2k::detail::fail(
-            "transcoder: a tile-part header with an RGN marker segment (tile %u) is not supported yet.",
-            static_cast<unsigned>(u16(pos + 4)));
-      }
-      p += 2 + u16(p + 2);
-    }
-    pos = end;
-  }
 }
 
 // Reads the main header of a codestream held in `in` (positioned on SOC).
@@ -378,7 +374,6 @@ size_t transcode_part1_to_htj2k(const uint8_t *in, size_t in_len, std::vector<ui
   j2k_main_header hin;
   read_main_header(src, in, in_len, hin);
   check_supported(hin);
-  check_tile_part_headers(in, in_len);
 
   element_siz numTiles;
   hin.get_number_of_tiles(numTiles.x, numTiles.y);
@@ -464,6 +459,10 @@ size_t transcode_part1_to_htj2k(const uint8_t *in, size_t in_len, std::vector<ui
         ov.QCC.push_back(std::unique_ptr<QCC_marker>(new QCC_marker(*q)));
         has_override = true;
       }
+      for (const auto &g : th->RGN) {
+        ov.RGN.push_back(std::unique_ptr<RGN_marker>(new RGN_marker(*g)));
+        has_override = true;
+      }
     }
     tout[i].enc_init(static_cast<uint16_t>(i), hout, empty_buf, true, true, has_override ? &ov : nullptr);
     if (has_override) {
@@ -472,6 +471,7 @@ size_t transcode_part1_to_htj2k(const uint8_t *in, size_t in_len, std::vector<ui
       for (auto &c : ov.COC) c->write(tb);
       if (ov.QCD != nullptr) ov.QCD->write(tb);
       for (auto &q : ov.QCC) q->write(tb);
+      for (auto &g : ov.RGN) g->write(tb);
       std::vector<uint8_t> bytes;
       tb.flush(&bytes);
       tout[i].set_tile_part_header_bytes(std::move(bytes));
@@ -487,9 +487,13 @@ size_t transcode_part1_to_htj2k(const uint8_t *in, size_t in_len, std::vector<ui
     ThreadPool *pool = options.num_threads == 1 ? nullptr : ThreadPool::instance(options.num_threads);
 #endif
     for (uint32_t i = 0; i < num_tiles; ++i) {
-      std::vector<std::pair<j2k_codeblock *, j2k_codeblock *>> pairs;
+      struct block_job {
+        j2k_codeblock *in, *out;
+        uint8_t roi;
+      };
+      std::vector<block_job> pairs;
       for_each_block_pair(tin[i], tout[i],
-                          [&](j2k_codeblock *bi, j2k_codeblock *bo) { pairs.emplace_back(bi, bo); });
+                          [&](j2k_codeblock *bi, j2k_codeblock *bo, uint8_t roi) { pairs.push_back({bi, bo, roi}); });
       constexpr size_t CHUNK = 8;
       const size_t nchunks   = (pairs.size() + CHUNK - 1) / CHUNK;
       std::vector<transcode_stats> cstats(nchunks);
@@ -502,7 +506,7 @@ size_t transcode_part1_to_htj2k(const uint8_t *in, size_t in_len, std::vector<ui
         try {
           const size_t end = std::min(pairs.size(), (k + 1) * CHUNK);
           for (size_t j = k * CHUNK; j < end; ++j)
-            transcode_block(pairs[j].first, pairs[j].second, sc, options, cstats[k]);
+            transcode_block(pairs[j].in, pairs[j].out, pairs[j].roi, sc, options, cstats[k]);
         } catch (...) {
           std::lock_guard<std::mutex> lk(error_mutex);
           if (!error) error = std::current_exception();
