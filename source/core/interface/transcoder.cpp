@@ -273,7 +273,6 @@ int32_t coded_magb(j2k_tile *tiles, uint32_t num_tiles) {
 
 void check_supported(const j2k_main_header &h) {
   if (!h.RGN.empty()) open_htj2k::detail::fail("transcoder: RGN (ROI) marker segments are not supported.");
-  if (h.POC != nullptr) open_htj2k::detail::fail("transcoder: POC marker segments are not supported yet.");
   if (!h.PPM.empty()) open_htj2k::detail::fail("transcoder: PPM marker segments are not supported yet.");
   if (!h.DFS.empty() || !h.ATK.empty())
     open_htj2k::detail::fail("transcoder: Part 2 (DFS/ATK) marker segments are not supported yet.");
@@ -425,6 +424,10 @@ size_t transcode_part1_to_htj2k(const uint8_t *in, size_t in_len, std::vector<ui
   for (auto &c : hout.COC) c->set_Cmodes(static_cast<uint8_t>(HT));
   hout.COD->set_number_of_layers(1);
   hout.SIZ->set_cap_capability();
+  // The input packets are read in the order its POC marker segments give.  They are written again
+  // in the order of the COD, a progression order every packet set can be put in, so the output
+  // needs no progression order changes.
+  hout.POC.reset();
   hout.TLM.clear();
   hout.PLM.clear();
   {
