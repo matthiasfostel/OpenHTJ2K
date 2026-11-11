@@ -224,6 +224,11 @@ class COC_marker : public j2k_marker_io_base {
   void get_precinct_size(element_siz &out, uint8_t resolution);
   uint8_t get_Cmodes();
   uint8_t get_transformation();
+  void set_Cmodes(uint8_t style) { SPcoc[3] = style; }
+  int write(j2c_dst_memory &dst);
+
+ private:
+  bool wide_ccoc_ = false;  // Ccoc is 16 bits (Csiz >= 257)
 };
 
 /********************************************************************************
