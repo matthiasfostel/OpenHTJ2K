@@ -596,6 +596,7 @@ if(_ohtj2k_build_tests)
   # conformance testing — declares the `test_artifacts` cleanup fixture and the
   # main HT/Part-1/Part-2/WASM test sets.
   include(${CMAKE_CURRENT_SOURCE_DIR}/tests/decoder_conformance.cmake)
+  include(${CMAKE_CURRENT_SOURCE_DIR}/tests/transcoder_test.cmake)
   include(${CMAKE_CURRENT_SOURCE_DIR}/tests/encoder_test.cmake)
   include(${CMAKE_CURRENT_SOURCE_DIR}/tests/progression_levels.cmake)
   include(${CMAKE_CURRENT_SOURCE_DIR}/tests/jpip_phase1.cmake)
