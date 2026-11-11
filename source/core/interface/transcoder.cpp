@@ -272,7 +272,6 @@ int32_t coded_magb(j2k_tile *tiles, uint32_t num_tiles) {
 }
 
 void check_supported(const j2k_main_header &h) {
-  if (!h.COC.empty()) open_htj2k::detail::fail("transcoder: COC marker segments are not supported yet.");
   if (!h.RGN.empty()) open_htj2k::detail::fail("transcoder: RGN (ROI) marker segments are not supported.");
   if (h.POC != nullptr) open_htj2k::detail::fail("transcoder: POC marker segments are not supported yet.");
   if (!h.PPM.empty()) open_htj2k::detail::fail("transcoder: PPM marker segments are not supported yet.");
@@ -280,6 +279,13 @@ void check_supported(const j2k_main_header &h) {
     open_htj2k::detail::fail("transcoder: Part 2 (DFS/ATK) marker segments are not supported yet.");
   if (h.COD == nullptr || h.QCD == nullptr || h.SIZ == nullptr)
     open_htj2k::detail::fail("transcoder: the main header lacks SIZ, COD or QCD.");
+  // A COC segment may give a component its own levels, code-block size, precincts and style.  The
+  // wavelet filter has to stay the same everywhere: the CAP marker segment tells a decoder
+  // whether the HT code-blocks hold reversible or irreversible data once for the codestream.
+  for (const auto &c : h.COC) {
+    if (c->get_transformation() != h.COD->get_transformation())
+      open_htj2k::detail::fail("transcoder: a COC marker segment with another wavelet filter than the COD is not supported.");
+  }
   if (h.COD->get_Cmodes() & HT)
     open_htj2k::detail::fail("transcoder: the input already uses the HT block coder.");
 }
@@ -416,6 +422,7 @@ size_t transcode_part1_to_htj2k(const uint8_t *in, size_t in_len, std::vector<ui
   const bool reversible = (hout.COD->get_transformation() == 1);
   const auto NL0        = hout.COD->get_dwt_levels();
   hout.COD->set_Cmodes(static_cast<uint8_t>(HT));
+  for (auto &c : hout.COC) c->set_Cmodes(static_cast<uint8_t>(HT));
   hout.COD->set_number_of_layers(1);
   hout.SIZ->set_cap_capability();
   hout.TLM.clear();

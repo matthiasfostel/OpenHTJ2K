@@ -567,6 +567,7 @@ COC_marker::COC_marker(j2c_src_memory &in, uint16_t Csiz) : j2k_marker_io_base(_
   this->set_buf(in.get_buf_pos());
   in.get_N_byte(this->get_buf(), Lmar - 2U);
   uint16_t len = 2;  // tmp length including Lcoc
+  wide_ccoc_   = (Csiz >= 257);
   if (Csiz < 257) {
     Ccoc = get_byte();
     len++;
@@ -599,6 +600,19 @@ COC_marker::COC_marker(j2c_src_memory &in, uint16_t Csiz) : j2k_marker_io_base(_
                              static_cast<unsigned>(SPcoc[0]));
   }
   is_set = true;
+}
+
+int COC_marker::write(j2c_dst_memory &dst) {
+  dst.put_word(code);
+  dst.put_word(static_cast<uint16_t>(2 + (wide_ccoc_ ? 2 : 1) + 1 + SPcoc.size()));
+  if (wide_ccoc_) {
+    dst.put_word(Ccoc);
+  } else {
+    dst.put_byte(static_cast<uint8_t>(Ccoc));
+  }
+  dst.put_byte(Scoc);
+  for (uint8_t b : SPcoc) dst.put_byte(b);
+  return EXIT_SUCCESS;
 }
 
 uint16_t COC_marker::get_component_index() const { return Ccoc; }
@@ -1838,7 +1852,7 @@ void j2k_main_header::flush(j2c_dst_memory &buf) {
   COD->write(buf);
   if (!COC.empty()) {
     for (size_t i = 0; i < COC.size(); ++i) {
-      // COC[i]->write(buf);
+      COC[i]->write(buf);
     }
   }
   QCD->write(buf);
