@@ -281,10 +281,8 @@ void check_supported(const j2k_main_header &h) {
     open_htj2k::detail::fail("transcoder: the input already uses the HT block coder.");
 }
 
-// Rejects a codestream whose tile-part headers hold COD, COC, QCD, QCC or RGN marker segments.
-// The output tiles take their coding and quantisation parameters from the main header, so a tile
-// that overrides them would be written with the wrong step sizes and decode to a wrong image
-// (the main-header-only check above cannot see these).  Walks the segments by their lengths.
+// Rejects a codestream whose tile-part headers hold RGN marker segments (a COD, COC, QCD or QCC
+// there is carried over to the output tile).  Walks the segments by their lengths.
 void check_tile_part_headers(const uint8_t *in, size_t len) {
   auto u16 = [&](size_t p) -> uint32_t { return (static_cast<uint32_t>(in[p]) << 8) | in[p + 1]; };
   size_t pos = 2;  // after SOC
@@ -296,10 +294,9 @@ void check_tile_part_headers(const uint8_t *in, size_t len) {
     size_t p         = pos + 12;                                       // after the SOT segment
     while (p + 4 <= end && u16(p) != _SOD) {
       const uint32_t m = u16(p);
-      if (m == _COD || m == _COC || m == _QCD || m == _QCC || m == _RGN) {
+      if (m == _RGN) {
         open_htj2k::detail::fail(
-            "transcoder: a tile-part header with a COD, COC, QCD, QCC or RGN marker segment (tile %u) is "
-            "not supported yet.",
+            "transcoder: a tile-part header with an RGN marker segment (tile %u) is not supported yet.",
             static_cast<unsigned>(u16(pos + 4)));
       }
       p += 2 + u16(p + 2);
@@ -440,7 +437,46 @@ size_t transcode_part1_to_htj2k(const uint8_t *in, size_t in_len, std::vector<ui
 
   std::vector<int32_t *> empty_buf;
   std::unique_ptr<j2k_tile[]> tout(new j2k_tile[num_tiles]);
-  for (uint32_t i = 0; i < num_tiles; ++i) tout[i].enc_init(static_cast<uint16_t>(i), hout, empty_buf, true, true);
+  for (uint32_t i = 0; i < num_tiles; ++i) {
+    // A COD, COC, QCD or QCC in the input's tile-part header is kept for the tile, with the HT
+    // code-block style and one layer, and written in the tile-part header of the output.
+    j2k_tilepart_header ov(hout.SIZ->get_num_components());
+    bool has_override = false;
+    if (const j2k_tilepart_header *th = tin[i].first_tile_part_header()) {
+      if (th->COD != nullptr) {
+        ov.COD = std::unique_ptr<COD_marker>(new COD_marker(*th->COD));
+        ov.COD->set_Cmodes(static_cast<uint8_t>(HT));
+        ov.COD->set_number_of_layers(1);
+        reversible = reversible && (ov.COD->get_transformation() == 1);
+        has_override = true;
+      }
+      for (const auto &c : th->COC) {
+        ov.COC.push_back(std::unique_ptr<COC_marker>(new COC_marker(*c)));
+        ov.COC.back()->set_Cmodes(static_cast<uint8_t>(HT));
+        reversible = reversible && (c->get_transformation() == 1);
+        has_override = true;
+      }
+      if (th->QCD != nullptr) {
+        ov.QCD = std::unique_ptr<QCD_marker>(new QCD_marker(*th->QCD));
+        has_override = true;
+      }
+      for (const auto &q : th->QCC) {
+        ov.QCC.push_back(std::unique_ptr<QCC_marker>(new QCC_marker(*q)));
+        has_override = true;
+      }
+    }
+    tout[i].enc_init(static_cast<uint16_t>(i), hout, empty_buf, true, true, has_override ? &ov : nullptr);
+    if (has_override) {
+      j2c_dst_memory tb;
+      if (ov.COD != nullptr) ov.COD->write(tb);
+      for (auto &c : ov.COC) c->write(tb);
+      if (ov.QCD != nullptr) ov.QCD->write(tb);
+      for (auto &q : ov.QCC) q->write(tb);
+      std::vector<uint8_t> bytes;
+      tb.flush(&bytes);
+      tout[i].set_tile_part_header_bytes(std::move(bytes));
+    }
+  }
 
   // Code-blocks.  Each block is independent, so they run on the thread pool in fixed chunks; every
   // chunk has its own statistics, summed in chunk order, so the output does not depend on the

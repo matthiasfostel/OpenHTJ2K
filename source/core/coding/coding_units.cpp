@@ -5895,7 +5895,7 @@ void j2k_tile::write_packets_direct_impl(j2k_main_header &main_header, Sink &sin
 
   j2k_tile_part *tp           = this->tile_part[0].get();
   const uint32_t sop_overhead = static_cast<uint32_t>(6 * this->num_packets * this->is_use_SOP());
-  tp->header->SOT.set_tile_part_length(this->length + sop_overhead);
+  tp->header->SOT.set_tile_part_length(this->length + sop_overhead + static_cast<uint32_t>(tph_bytes.size()));
 
   sink.put_word(_SOT);
   sink.put_word(0x000A);  // Lsot = 10
@@ -5903,6 +5903,7 @@ void j2k_tile::write_packets_direct_impl(j2k_main_header &main_header, Sink &sin
   sink.put_dword(tp->header->SOT.get_tile_part_length());
   sink.put_byte(0);  // TPsot
   sink.put_byte(1);  // TNsot
+  for (uint8_t b : tph_bytes) sink.put_byte(b);
   sink.put_word(_SOD);
 
   porder_info.add(0, 0, this->numlayers, static_cast<uint8_t>(max_c_NL + 1), this->num_components,
@@ -7220,7 +7221,7 @@ void j2k_tile::decode_line_based_stream_planar(j2k_main_header &hdr, uint8_t red
 }
 
 void j2k_tile::enc_init(uint16_t idx, j2k_main_header &main_header, std::vector<int32_t *> img,
-                        bool line_based, bool streaming) {
+                        bool line_based, bool streaming, const j2k_tilepart_header *tile_override) {
   if (img.empty() && !streaming) {
     open_htj2k::detail::fail("input image is empty.");
   }
@@ -7256,6 +7257,12 @@ void j2k_tile::enc_init(uint16_t idx, j2k_main_header &main_header, std::vector<
   this->pos1.x = std::min(TOsiz.x + (p + 1U) * Tsiz.x, Siz.x);
   this->pos1.y = std::min(TOsiz.y + (q + 1U) * Tsiz.y, Siz.y);
 
+  if (tile_override != nullptr) {
+    if (tile_override->COD != nullptr) tphdr->COD = MAKE_UNIQUE<COD_marker>(*tile_override->COD);
+    if (tile_override->QCD != nullptr) tphdr->QCD = MAKE_UNIQUE<QCD_marker>(*tile_override->QCD);
+    for (const auto &c : tile_override->COC) tphdr->COC.push_back(MAKE_UNIQUE<COC_marker>(*c));
+    for (const auto &q : tile_override->QCC) tphdr->QCC.push_back(MAKE_UNIQUE<QCC_marker>(*q));
+  }
   // set coding style related properties from tile-part header
   if (tphdr->COD != nullptr) {
     setCODparams(tphdr->COD.get());
@@ -8310,7 +8317,7 @@ uint32_t j2k_tile::get_tile_part_size() const {
   }
   np *= numlayers;
   const uint32_t sop_overhead = static_cast<uint32_t>(6 * np * (use_SOP ? 1 : 0));
-  return length + sop_overhead + 14;  // +14 = SOT marker (12) + SOD marker (2)
+  return length + sop_overhead + static_cast<uint32_t>(tph_bytes.size()) + 14;  // +14 = SOT marker (12) + SOD marker (2)
 }
 
 OPENHTJ2K_MAYBE_UNUSED uint32_t j2k_tile::get_buf_length() { return tile_buf->get_total_length(); }

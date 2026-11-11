@@ -44,7 +44,7 @@
 //
 // Prototype limits (the function throws, with a message, when the input has one):
 //   no RGN, DFS or ATK marker
-//   segments, no tile-part header COD/QCD/COC/QCC overrides, Part 1 block coder input.
+//   segments, no tile-part header RGN, Part 1 block coder input.
 
 #pragma once
 

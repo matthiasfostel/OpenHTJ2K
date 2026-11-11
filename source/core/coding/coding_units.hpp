@@ -877,6 +877,7 @@ class j2k_tile_component : public j2k_tile_base {
  *******************************************************************************/
 class j2k_tile : public j2k_tile_base {
  private:
+  std::vector<uint8_t> tph_bytes;
   // vector array of tile-parts
   std::vector<std::unique_ptr<j2k_tile_part>> tile_part;
   // index of this tile
@@ -1148,8 +1149,18 @@ class j2k_tile : public j2k_tile_base {
   std::vector<ht_rd_info> enc_rd;
   ht_rc_state *enc_rc = nullptr;
   // Initialization with tile-index
+  // tile_override, if any, holds the COD, COC, QCD and QCC marker segments of this tile's tile-part
+  // header (the transcoder keeps them from its input); they apply to the tile as they do in a decoder.
   void enc_init(uint16_t idx, j2k_main_header &main_header, std::vector<int32_t *> img,
-                bool line_based = false, bool streaming = false);
+                bool line_based = false, bool streaming = false,
+                const j2k_tilepart_header *tile_override = nullptr);
+  // The first tile-part header of the tile, as read from a codestream (null before one was read).
+  const j2k_tilepart_header *first_tile_part_header() const {
+    return tile_part.empty() ? nullptr : tile_part[0]->header.get();
+  }
+  // Bytes (marker segments) written between the SOT and SOD markers of the tile-part that
+  // write_packets_direct() writes; get_tile_part_size() counts them.
+  void set_tile_part_header_bytes(std::vector<uint8_t> bytes) { tph_bytes = std::move(bytes); }
   // DC offsetting
   int perform_dc_offset(j2k_main_header &main_header);
   // forward color transform
