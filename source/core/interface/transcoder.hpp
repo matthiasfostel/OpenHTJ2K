@@ -36,6 +36,11 @@
 // through a bit-plane, unless transcode_partial_plane::keep or drop is chosen).  The marker segments that describe the image (SIZ, QCD, QCC,
 // COM, tiling, precincts, progression order, SOP/EPH) are kept; the code-block style becomes HT,
 // the CAP marker segment is added, and the packets are written again, with one quality layer.
+// The layers of the input are merged on purpose: a Part 1 block is refined layer by layer, but an
+// HT block is one HT set (a cleanup segment, with an optional refinement segment), and a decoder
+// that handles several HT sets per block is not to be relied on (OpenJPEG's does not).  The
+// input's PLT marker segments become PLT marker segments for the output's packets; its PLM, PPM,
+// POC, TLM and CPF marker segments are not carried over.
 //
 // The input is a raw codestream or a JP2/JPH file (found by its signature box).  With
 // transcode_options::jph_output the result is a JPH file: the boxes of a JP2 input (image header,

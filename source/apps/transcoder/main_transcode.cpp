@@ -58,6 +58,9 @@ static void usage(const char *prog) {
       "      cleanup pass are exact in all modes.\n"
       "  -num_threads N  worker threads for the code-block loop (0 = all hardware threads, default;\n"
       "      1 = single-threaded). The output is identical for every N.\n"
+      "  The output always has one quality layer: the input's layers are merged. An HT code-block is\n"
+      "  a single HT set that other decoders (OpenJPEG, for one) can read, and it cannot be refined\n"
+      "  layer by layer as a Part 1 block can. PLM marker segments are not written; PLT ones are.\n"
       "  -h  this help\n",
       prog);
 }
