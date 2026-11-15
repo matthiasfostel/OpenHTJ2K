@@ -51,6 +51,9 @@ if(TARGET open_htj2k_transcode)
   tc_add(conf_p0_06 INPUT ${CONFORMANCE_DATA_DIR}/p0_06.j2k MODE close PAE 4 MSE 1)
   # A large lossless one.
   tc_add(conf_u10_part1_lossless INPUT ${CONFORMANCE_DATA_DIR}/u10_part1_lossless.j2c)
+  # A fuzzer's 610 byte stream whose SIZ declares about 28000 tiles, nearly all without a tile-part.
+  # They are left out of the output; the transcoder once allocated 4 GB for them.
+  tc_add(fuzz_many_empty_tiles INPUT ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/transcoder_many_empty_tiles.j2c)
 
   # Streams the OpenHTJ2K encoder makes with the Part 1 block coder: rates (blocks cut inside a
   # bit-plane), layers, every code-block style switch, Qfactor, lossless, 16 bit, block sizes,

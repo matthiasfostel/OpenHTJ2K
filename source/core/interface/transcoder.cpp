@@ -264,9 +264,10 @@ void for_each_block_pair(j2k_tile &tin, j2k_tile &tout, Fn fn) {
 
 // The magnitude bound B of the transcoded HT code-blocks (ISO/IEC 15444-15, 8.7.3); the same
 // computation as the encoder's coded_MAGB().
-int32_t coded_magb(j2k_tile *tiles, uint32_t num_tiles) {
+int32_t coded_magb(j2k_tile *tiles, uint32_t num_tiles, const std::vector<uint8_t> &present) {
   int32_t B = 0;
   for (uint32_t t = 0; t < num_tiles; ++t) {
+    if (!present[t]) continue;
     for (uint16_t c = 0; c < tiles[t].get_num_components(); ++c) {
       j2k_tile_component *tc = tiles[t].get_tile_component(c);
       const int32_t NL       = tc->get_dwt_levels();
@@ -392,10 +393,18 @@ size_t transcode_part1_to_htj2k(const uint8_t *in, size_t in_len, std::vector<ui
       tin[ti].add_tile_part(sot, src, hin);
     }
   }
+  // A tile with no tile-part in the input has no data to transcode.  It is left out of the output,
+  // as the input leaves it out, so a header that declares many tiles costs nothing for them.
+  std::vector<uint8_t> present(num_tiles, 0);
+  uint32_t num_present = 0;
   for (uint32_t i = 0; i < num_tiles; ++i) {
+    if (tin[i].first_tile_part_header() == nullptr) continue;
+    present[i] = 1;
+    ++num_present;
     tin[i].line_based_decode = true;
     tin[i].create_tile_buf(hin);
   }
+  if (num_present == 0) open_htj2k::detail::fail("transcoder: the codestream has no tile-part.");
 
   // Output: the same header with the HT code-block style, one quality layer and a CAP marker
   // segment.  It is parsed from the input again, to be changed without touching the input's.
@@ -433,6 +442,7 @@ size_t transcode_part1_to_htj2k(const uint8_t *in, size_t in_len, std::vector<ui
   std::vector<int32_t *> empty_buf;
   std::unique_ptr<j2k_tile[]> tout(new j2k_tile[num_tiles]);
   for (uint32_t i = 0; i < num_tiles; ++i) {
+    if (!present[i]) continue;
     // A COD, COC, QCD or QCC in the input's tile-part header is kept for the tile, with the HT
     // code-block style and one layer, and written in the tile-part header of the output.
     j2k_tilepart_header ov(hout.SIZ->get_num_components());
@@ -487,6 +497,7 @@ size_t transcode_part1_to_htj2k(const uint8_t *in, size_t in_len, std::vector<ui
     ThreadPool *pool = options.num_threads == 1 ? nullptr : ThreadPool::instance(options.num_threads);
 #endif
     for (uint32_t i = 0; i < num_tiles; ++i) {
+      if (!present[i]) continue;
       struct block_job {
         j2k_codeblock *in, *out;
         uint8_t roi;
@@ -554,14 +565,15 @@ size_t transcode_part1_to_htj2k(const uint8_t *in, size_t in_len, std::vector<ui
   // The magnitude bound is known now.
   {
     const uint16_t bit5 = static_cast<uint16_t>(reversible ? 0 : 1);
-    hout.CAP->set_Ccap(static_cast<uint16_t>((bit5 << 5) | magb_field(coded_magb(tout.get(), num_tiles))), 15);
+    hout.CAP->set_Ccap(static_cast<uint16_t>((bit5 << 5) | magb_field(coded_magb(tout.get(), num_tiles, present))), 15);
   }
   if (num_tiles > 1) {
-    std::vector<uint16_t> tile_indices(num_tiles);
-    std::vector<uint32_t> tile_lengths(num_tiles);
+    std::vector<uint16_t> tile_indices;
+    std::vector<uint32_t> tile_lengths;
     for (uint32_t i = 0; i < num_tiles; ++i) {
-      tile_indices[i] = static_cast<uint16_t>(i);
-      tile_lengths[i] = tout[i].get_tile_part_size();
+      if (!present[i]) continue;
+      tile_indices.push_back(static_cast<uint16_t>(i));
+      tile_lengths.push_back(tout[i].get_tile_part_size());
     }
     hout.TLM.push_back(std::unique_ptr<TLM_marker>(new TLM_marker(static_cast<uint8_t>(0), tile_indices, tile_lengths)));
   }
@@ -571,7 +583,7 @@ size_t transcode_part1_to_htj2k(const uint8_t *in, size_t in_len, std::vector<ui
   hdr_buf.put_word(_SOC);
   hout.flush(hdr_buf);
   size_t total = hdr_buf.get_length();
-  for (uint32_t i = 0; i < num_tiles; ++i) total += tout[i].get_tile_part_size();
+  for (uint32_t i = 0; i < num_tiles; ++i) total += present[i] ? tout[i].get_tile_part_size() : 0;
   total += 2;
   std::vector<uint8_t> hdr_bytes;
   hdr_buf.flush(&hdr_bytes);
@@ -608,7 +620,7 @@ size_t transcode_part1_to_htj2k(const uint8_t *in, size_t in_len, std::vector<ui
   uint8_t *p = out.data() + file_pre.size();
   std::memcpy(p, hdr_bytes.data(), hdr_bytes.size());
   p += hdr_bytes.size();
-  for (uint32_t i = 0; i < num_tiles; ++i) p += tout[i].write_packets_direct(hout, p);
+  for (uint32_t i = 0; i < num_tiles; ++i) p += present[i] ? tout[i].write_packets_direct(hout, p) : 0;
   p[0] = 0xFF;
   p[1] = 0xD9;
   p += 2;
