@@ -413,8 +413,14 @@ size_t transcode_part1_to_htj2k(const uint8_t *in, size_t in_len, std::vector<ui
   read_main_header(src2, in, in_len, hout);
   // CAP bit 5 (ISO/IEC 15444-15, A.3.6): 0 (HTREV) only when every component is reversible; a
   // codestream with an irreversible component, a mixed one included, is in the HTIRV set (8.7.2).
-  bool reversible = (hout.COD->get_transformation() == 1);
-  for (const auto &c : hout.COC) reversible = reversible && (c->get_transformation() == 1);
+  // The transformation of a component is that of its COC if it has one, else that of the COD; a
+  // tile-part header's COC and COD take precedence over the main header's for that tile.
+  const uint16_t ncomp = hout.SIZ->get_num_components();
+  std::vector<uint8_t> main_rev(ncomp, hout.COD->get_transformation() == 1 ? 1 : 0);
+  for (const auto &c : hout.COC)
+    if (c->get_component_index() < ncomp) main_rev[c->get_component_index()] = (c->get_transformation() == 1);
+  bool reversible = true;
+  for (uint8_t r : main_rev) reversible = reversible && (r != 0);
   const auto NL0        = hout.COD->get_dwt_levels();
   hout.COD->set_Cmodes(static_cast<uint8_t>(HT));
   for (auto &c : hout.COC) c->set_Cmodes(static_cast<uint8_t>(HT));
@@ -452,13 +458,11 @@ size_t transcode_part1_to_htj2k(const uint8_t *in, size_t in_len, std::vector<ui
         ov.COD = std::unique_ptr<COD_marker>(new COD_marker(*th->COD));
         ov.COD->set_Cmodes(static_cast<uint8_t>(HT));
         ov.COD->set_number_of_layers(1);
-        reversible = reversible && (ov.COD->get_transformation() == 1);
         has_override = true;
       }
       for (const auto &c : th->COC) {
         ov.COC.push_back(std::unique_ptr<COC_marker>(new COC_marker(*c)));
         ov.COC.back()->set_Cmodes(static_cast<uint8_t>(HT));
-        reversible = reversible && (c->get_transformation() == 1);
         has_override = true;
       }
       if (th->QCD != nullptr) {
@@ -473,6 +477,13 @@ size_t transcode_part1_to_htj2k(const uint8_t *in, size_t in_len, std::vector<ui
         ov.RGN.push_back(std::unique_ptr<RGN_marker>(new RGN_marker(*g)));
         has_override = true;
       }
+    }
+    if (has_override) {
+      std::vector<uint8_t> rev(main_rev);
+      if (ov.COD != nullptr) rev.assign(ncomp, ov.COD->get_transformation() == 1 ? 1 : 0);
+      for (const auto &c : ov.COC)
+        if (c->get_component_index() < ncomp) rev[c->get_component_index()] = (c->get_transformation() == 1);
+      for (uint8_t r : rev) reversible = reversible && (r != 0);
     }
     tout[i].enc_init(static_cast<uint16_t>(i), hout, empty_buf, true, true, has_override ? &ov : nullptr);
     if (has_override) {
