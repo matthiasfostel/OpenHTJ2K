@@ -463,6 +463,7 @@ class CRG_marker : public j2k_marker_io_base {
  public:
   CRG_marker();
   explicit CRG_marker(j2c_src_memory &in);
+  int write(j2c_dst_memory &dst);
 };
 
 /********************************************************************************

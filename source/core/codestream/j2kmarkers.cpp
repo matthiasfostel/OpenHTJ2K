@@ -1656,6 +1656,17 @@ CRG_marker::CRG_marker(j2c_src_memory &in) : j2k_marker_io_base(_CRG) {
   is_set = true;
 }
 
+int CRG_marker::write(j2c_dst_memory &dst) {
+  assert(is_set == true);
+  dst.put_word(code);
+  dst.put_word(static_cast<uint16_t>(2U + 4U * Xcrg.size()));
+  for (size_t i = 0; i < Xcrg.size(); ++i) {
+    dst.put_word(Xcrg[i]);
+    dst.put_word(Ycrg[i]);
+  }
+  return EXIT_SUCCESS;
+}
+
 /********************************************************************************
  * COM_marker
  *******************************************************************************/
@@ -1896,7 +1907,7 @@ void j2k_main_header::flush(j2c_dst_memory &buf) {
       // PLM[i]->write(buf);
     }
   }
-  // CRG->write(buf);
+  if (CRG != nullptr) CRG->write(buf);
   if (!COM.empty()) {
     for (auto &i : COM) {
       i->write(buf);

@@ -453,7 +453,10 @@ size_t transcode_part1_to_htj2k(const uint8_t *in, size_t in_len, std::vector<ui
     // code-block style and one layer, and written in the tile-part header of the output.
     j2k_tilepart_header ov(hout.SIZ->get_num_components());
     bool has_override = false;
+    // Comments of the input's tile-part header are kept in the output's.
+    std::vector<COM_marker> tile_com;
     if (const j2k_tilepart_header *th = tin[i].first_tile_part_header()) {
+      for (const auto &c : th->COM) tile_com.push_back(*c);
       if (th->COD != nullptr) {
         ov.COD = std::unique_ptr<COD_marker>(new COD_marker(*th->COD));
         ov.COD->set_Cmodes(static_cast<uint8_t>(HT));
@@ -486,13 +489,14 @@ size_t transcode_part1_to_htj2k(const uint8_t *in, size_t in_len, std::vector<ui
       for (uint8_t r : rev) reversible = reversible && (r != 0);
     }
     tout[i].enc_init(static_cast<uint16_t>(i), hout, empty_buf, true, true, has_override ? &ov : nullptr);
-    if (has_override) {
+    if (has_override || !tile_com.empty()) {
       j2c_dst_memory tb;
       if (ov.COD != nullptr) ov.COD->write(tb);
       for (auto &c : ov.COC) c->write(tb);
       if (ov.QCD != nullptr) ov.QCD->write(tb);
       for (auto &q : ov.QCC) q->write(tb);
       for (auto &g : ov.RGN) g->write(tb);
+      for (auto &c : tile_com) c.write(tb);
       std::vector<uint8_t> bytes;
       tb.flush(&bytes);
       tout[i].set_tile_part_header_bytes(std::move(bytes));
