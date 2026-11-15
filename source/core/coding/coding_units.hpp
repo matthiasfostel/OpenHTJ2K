@@ -1161,6 +1161,9 @@ class j2k_tile : public j2k_tile_base {
   const j2k_tilepart_header *first_tile_part_header() const {
     return tile_part.empty() ? nullptr : tile_part[0]->header.get();
   }
+  // The length in bytes of each packet write_packets_direct() writes, in the order it writes them
+  // (SOP and EPH marker segments included, as the PLT and PLM marker segments count them).
+  std::vector<uint32_t> get_packet_lengths(j2k_main_header &main_header);
   // Bytes (marker segments) written between the SOT and SOD markers of the tile-part that
   // write_packets_direct() writes; get_tile_part_size() counts them.
   void set_tile_part_header_bytes(std::vector<uint8_t> bytes) { tph_bytes = std::move(bytes); }

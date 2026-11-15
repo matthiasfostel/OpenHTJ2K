@@ -293,6 +293,36 @@ int32_t coded_magb(j2k_tile *tiles, uint32_t num_tiles, const std::vector<uint8_
   return B;
 }
 
+// PLT marker segments (ISO/IEC 15444-1, A.7.3) holding the packet lengths: each Iplt is a base 128
+// number, most significant group first, with the top bit set on every byte but the last.  A
+// segment has at most 65532 bytes of lengths and holds whole numbers.
+std::vector<uint8_t> plt_segments(const std::vector<uint32_t> &lengths) {
+  std::vector<uint8_t> out;
+  size_t i     = 0;
+  uint8_t zplt = 0;
+  while (i < lengths.size()) {
+    std::vector<uint8_t> body;
+    while (i < lengths.size()) {
+      uint8_t tmp[5];
+      int n       = 0;
+      uint32_t v  = lengths[i];
+      tmp[n++]    = static_cast<uint8_t>(v & 0x7F);
+      for (v >>= 7; v != 0; v >>= 7) tmp[n++] = static_cast<uint8_t>(0x80 | (v & 0x7F));
+      if (body.size() + static_cast<size_t>(n) > 65532U) break;
+      while (n > 0) body.push_back(tmp[--n]);
+      ++i;
+    }
+    const size_t L = body.size() + 3;
+    out.push_back(0xFF);
+    out.push_back(0x58);
+    out.push_back(static_cast<uint8_t>(L >> 8));
+    out.push_back(static_cast<uint8_t>(L & 0xFF));
+    out.push_back(zplt++);
+    out.insert(out.end(), body.begin(), body.end());
+  }
+  return out;
+}
+
 void check_supported(const j2k_main_header &h) {
   if (!h.DFS.empty() || !h.ATK.empty())
     open_htj2k::detail::fail("transcoder: Part 2 (DFS/ATK) marker segments are not supported yet.");
@@ -447,6 +477,10 @@ size_t transcode_part1_to_htj2k(const uint8_t *in, size_t in_len, std::vector<ui
 
   std::vector<int32_t *> empty_buf;
   std::unique_ptr<j2k_tile[]> tout(new j2k_tile[num_tiles]);
+  // The tile-part header bytes of each tile, and whether the input's tile-part had PLT marker
+  // segments (the output gets them for its own packets).
+  std::vector<std::vector<uint8_t>> tile_hdr_bytes(num_tiles);
+  std::vector<uint8_t> want_plt(num_tiles, 0);
   for (uint32_t i = 0; i < num_tiles; ++i) {
     if (!present[i]) continue;
     // A COD, COC, QCD or QCC in the input's tile-part header is kept for the tile, with the HT
@@ -499,8 +533,10 @@ size_t transcode_part1_to_htj2k(const uint8_t *in, size_t in_len, std::vector<ui
       for (auto &c : tile_com) c.write(tb);
       std::vector<uint8_t> bytes;
       tb.flush(&bytes);
+      tile_hdr_bytes[i] = bytes;
       tout[i].set_tile_part_header_bytes(std::move(bytes));
     }
+    if (const j2k_tilepart_header *th = tin[i].first_tile_part_header()) want_plt[i] = !th->PLT.empty();
   }
 
   // Code-blocks.  Each block is independent, so they run on the thread pool in fixed chunks; every
@@ -574,6 +610,12 @@ size_t transcode_part1_to_htj2k(const uint8_t *in, size_t in_len, std::vector<ui
         stats.refined += cs.refined;
       }
       tout[i].build_packet_headers();
+      if (want_plt[i]) {
+        std::vector<uint8_t> bytes = tile_hdr_bytes[i];
+        const std::vector<uint8_t> plt = plt_segments(tout[i].get_packet_lengths(hout));
+        bytes.insert(bytes.end(), plt.begin(), plt.end());
+        tout[i].set_tile_part_header_bytes(std::move(bytes));
+      }
     }
   }
 

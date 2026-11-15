@@ -5827,6 +5827,7 @@ struct file_sink {
   void put_N_bytes(const uint8_t *src, uint32_t length) {
     out.write(reinterpret_cast<const char *>(src), static_cast<std::streamsize>(length));
   }
+  void mark() {}
 };
 struct mem_sink {
   uint8_t *ptr;
@@ -5844,8 +5845,27 @@ struct mem_sink {
     std::memcpy(ptr, src, length);
     ptr += length;
   }
+  void mark() {}
+};
+// Counts the bytes written and notes where each packet starts (for the PLT marker segments).
+struct counting_sink {
+  size_t n = 0;
+  std::vector<size_t> starts;
+  void put_byte(uint8_t) { ++n; }
+  void put_word(uint16_t) { n += 2; }
+  void put_dword(uint32_t) { n += 4; }
+  void put_N_bytes(const uint8_t *, uint32_t length) { n += length; }
+  void mark() { starts.push_back(n); }
 };
 }  // namespace
+
+// Sinks that can note where a packet starts (the counting one) do; the others need not.
+template <typename Sink>
+static auto mark_packet(Sink &s, int) -> decltype(s.mark(), void()) {
+  s.mark();
+}
+template <typename Sink>
+static void mark_packet(Sink &, long) {}
 
 template <typename Sink>
 static void write_precinct_data(Sink &sink, j2k_precinct *cp, uint8_t num_bands, uint16_t layer,
@@ -5911,6 +5931,7 @@ void j2k_tile::write_packets_direct_impl(j2k_main_header &main_header, Sink &sin
 
   uint32_t packet_seq = 0;
   auto emit_sop       = [&](Sink &s) {
+    mark_packet(s, 0);
     if (this->is_use_SOP()) {
       s.put_word(_SOP);
       s.put_word(0x0004);
@@ -6195,6 +6216,17 @@ void j2k_tile::write_packets_direct(j2k_main_header &main_header, j2c_dst_memory
 void j2k_tile::write_packets_direct(j2k_main_header &main_header, std::ofstream &outfile) {
   file_sink sink(outfile);
   write_packets_direct_impl(main_header, sink);
+}
+
+std::vector<uint32_t> j2k_tile::get_packet_lengths(j2k_main_header &main_header) {
+  counting_sink sink;
+  write_packets_direct_impl(main_header, sink);
+  std::vector<uint32_t> lengths;
+  for (size_t i = 0; i < sink.starts.size(); ++i) {
+    const size_t end = (i + 1 < sink.starts.size()) ? sink.starts[i + 1] : sink.n;
+    lengths.push_back(static_cast<uint32_t>(end - sink.starts[i]));
+  }
+  return lengths;
 }
 
 size_t j2k_tile::write_packets_direct(j2k_main_header &main_header, uint8_t *dst) {

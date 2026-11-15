@@ -59,7 +59,11 @@ if(TARGET open_htj2k_transcode)
            -DINPUT=${CONFORMANCE_DATA_DIR}/p1_04.j2k -DWORK=${_tc_work}/keep_tile_com
            "-DHEX=ff64ffff0000ff4fff51;ff64001a0001437265617465642062792041776172652c20496e632e"
            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/transcoder_markers.cmake)
-  set_tests_properties(tc_keep_crg tc_keep_tile_com PROPERTIES LABELS transcoder)
+  # p0_07 has PLT marker segments in its tile-part headers; the output has them again, for its own packets.
+  add_test(NAME tc_plt COMMAND ${CMAKE_COMMAND} -DTRANS=$<TARGET_FILE:open_htj2k_transcode>
+           -DINPUT=${CONFORMANCE_DATA_DIR}/p0_07.j2k -DWORK=${_tc_work}/plt "-DHEX=ff58"
+           -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/transcoder_markers.cmake)
+  set_tests_properties(tc_keep_crg tc_keep_tile_com tc_plt PROPERTIES LABELS transcoder)
   # A fuzzer's 610 byte stream whose SIZ declares about 28000 tiles, nearly all without a tile-part.
   # They are left out of the output; the transcoder once allocated 4 GB for them.
   tc_add(fuzz_many_empty_tiles INPUT ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/transcoder_many_empty_tiles.j2c)
