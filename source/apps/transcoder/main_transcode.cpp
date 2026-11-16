@@ -58,9 +58,13 @@ static void usage(const char *prog) {
       "      cleanup pass are exact in all modes.\n"
       "  -num_threads N  worker threads for the code-block loop (0 = all hardware threads, default;\n"
       "      1 = single-threaded). The output is identical for every N.\n"
-      "  The output always has one quality layer: the input's layers are merged. An HT code-block is\n"
-      "  a single HT set that other decoders (OpenJPEG, for one) can read, and it cannot be refined\n"
-      "  layer by layer as a Part 1 block can. PLM marker segments are not written; PLT ones are.\n"
+      "  -layers merge|keep  merge = one quality layer (default): an HT code-block is a single HT\n"
+      "      set, which other decoders (OpenJPEG, for one) can read, and it cannot be refined layer\n"
+      "      by layer as a Part 1 block can. keep = the layer count of the input, with a block's HT\n"
+      "      set in the first layer the input had passes of it in: a decode of fewer layers shows\n"
+      "      early blocks at full precision and later blocks missing (EXPERIMENTAL; a larger output\n"
+      "      for the extra packet headers).\n"
+      "  PLM marker segments are not written; PLT ones are.\n"
       "  -h  this help\n",
       prog);
 }
@@ -79,6 +83,16 @@ int main(int argc, char *argv[]) {
       in_name = argv[++i];
     } else if (std::strcmp(argv[i], "-o") == 0 && i + 1 < argc) {
       out_name = argv[++i];
+    } else if (std::strcmp(argv[i], "-layers") == 0 && i + 1 < argc) {
+      const char *v = argv[++i];
+      if (std::strcmp(v, "keep") == 0) {
+        opt.layers = open_htj2k::transcode_layers::keep;
+      } else if (std::strcmp(v, "merge") == 0) {
+        opt.layers = open_htj2k::transcode_layers::merge;
+      } else {
+        std::printf("ERROR: -layers takes merge or keep, not %s\n", v);
+        return EXIT_FAILURE;
+      }
     } else if (std::strcmp(argv[i], "-partial") == 0 && i + 1 < argc) {
       const char *v = argv[++i];
       if (std::strcmp(v, "keep") == 0) {

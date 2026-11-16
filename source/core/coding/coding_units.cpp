@@ -1921,6 +1921,7 @@ void j2k_codeblock::reset_for_next_frame() {
   Cmodes &= static_cast<uint16_t>(~HT_PHLD);
   if (Cmodes & HT_MIXED) Cmodes |= HT;
   dec_layer_passes = 0;
+  dec_first_layer  = 0xFFFF;
 }
 
 /********************************************************************************
@@ -2249,6 +2250,7 @@ void j2k_precinct_subband::parse_packet_header(buf_chain *packet_header, uint16_
         return;
       }
       block->dec_layer_passes = static_cast<uint8_t>(new_passes);
+      if (block->dec_first_layer == 0xFFFF) block->dec_first_layer = layer_idx;
       // Retrieve Lblock
       while ((bit = packet_header->get_bit()) == 1) {
         // Lblock counts the bits used to signal a segment length; a segment

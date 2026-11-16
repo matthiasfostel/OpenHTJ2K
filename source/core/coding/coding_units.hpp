@@ -302,6 +302,8 @@ class j2k_codeblock : public j2k_region {
   // create_compressed_buffer() or skip_compressed_buffer() takes them.  The decoder keeps
   // no per-layer state: a layer's passes start at num_passes minus these.
   uint8_t dec_layer_passes = 0;
+  // Decoder: the first quality layer that carried passes of this code-block (0xFFFF if none).
+  uint16_t dec_first_layer = 0xFFFF;
   // Encoder: the passes of each quality layer and the pass each starts at.  Non-owning:
   // pooled by the owning j2k_precinct_subband.  nullptr in the decoder.
   uint8_t *layer_start;

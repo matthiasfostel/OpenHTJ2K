@@ -10,7 +10,7 @@ if(TARGET open_htj2k_transcode)
   # tc_add(<name> [INPUT file | ENC_IN file ENC_ARGS a@@b [ENC_EXT jp2]] [OUT_EXT jph]
   #        [MODE identical|close|reject] [PAE n MSE x] [PATTERN regex])
   function(tc_add name)
-    cmake_parse_arguments(A "" "INPUT;ENC_IN;ENC_ARGS;ENC_EXT;OUT_EXT;MODE;PAE;MSE;PATTERN" "" ${ARGN})
+    cmake_parse_arguments(A "" "INPUT;ENC_IN;ENC_ARGS;ENC_EXT;OUT_EXT;MODE;PAE;MSE;PATTERN;TRANS_ARGS" "" ${ARGN})
     set(_args -DDEC=$<TARGET_FILE:open_htj2k_dec> -DTRANS=$<TARGET_FILE:open_htj2k_transcode>
               -DWORK=${_tc_work}/${name})
     if(A_INPUT)
@@ -29,6 +29,9 @@ if(TARGET open_htj2k_transcode)
     endforeach()
     if(A_PATTERN)
       list(APPEND _args "-DPATTERN=${A_PATTERN}")
+    endif()
+    if(A_TRANS_ARGS)
+      list(APPEND _args "-DTRANS_ARGS=${A_TRANS_ARGS}")
     endif()
     if(A_MODE STREQUAL "close")
       list(APPEND _args -DIMGCMP=$<TARGET_FILE:imgcmp>)
@@ -51,6 +54,16 @@ if(TARGET open_htj2k_transcode)
   tc_add(conf_p0_06 INPUT ${CONFORMANCE_DATA_DIR}/p0_06.j2k MODE close PAE 4 MSE 1)
   # A large lossless one.
   tc_add(conf_u10_part1_lossless INPUT ${CONFORMANCE_DATA_DIR}/u10_part1_lossless.j2c)
+  # -layers keep: the input's layers stay (a block's HT set in the first layer the input had passes
+  # of it in).  The decode must be the Part 1 decode.
+  set(_K ${_tc_ref}/kodim23.ppm)
+  foreach(_c p0_02 p0_07 p1_03)
+    tc_add(layers_keep_${_c} INPUT ${CONFORMANCE_DATA_DIR}/${_c}.j2k TRANS_ARGS "-layers@@keep")
+  endforeach()
+  tc_add(layers_keep_layers3 ENC_IN ${_K} ENC_ARGS "Cmodes=0@@-rate@@0.25,0.5,1" TRANS_ARGS "-layers@@keep")
+  tc_add(layers_keep_layers5 ENC_IN ${_K} ENC_ARGS "Cmodes=0@@-rate@@0.1,0.25,0.5,1,2" TRANS_ARGS "-layers@@keep")
+  tc_add(layers_keep_all_modes_layers ENC_IN ${_K}
+         ENC_ARGS "Cmodes=BYPASS|RESET|RESTART|CAUSAL|ERTERM|SEGMARK@@-rate@@0.25,0.5,1" TRANS_ARGS "-layers@@keep")
   # Marker segments carried over: CRG (p0_03, main header), a COM in a tile-part header (p1_04, tile 29).
   add_test(NAME tc_keep_crg COMMAND ${CMAKE_COMMAND} -DTRANS=$<TARGET_FILE:open_htj2k_transcode>
            -DINPUT=${CONFORMANCE_DATA_DIR}/p0_03.j2k -DWORK=${_tc_work}/keep_crg "-DHEX=ff630006ff907f2e"

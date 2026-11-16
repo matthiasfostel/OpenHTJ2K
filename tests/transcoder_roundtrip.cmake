@@ -3,7 +3,7 @@
 #   cmake -DDEC=<open_htj2k_dec> -DTRANS=<open_htj2k_transcode> -DWORK=<scratch dir>
 #         [-DENC=<open_htj2k_enc> -DENC_IN=<image> "-DENC_ARGS=a@@b@@c" -DENC_EXT=<j2c|jp2>]
 #         [-DINPUT=<Part 1 codestream or JP2 file>]
-#         [-DOUT_EXT=<j2c|jph>] [-DMODE=identical|close|reject]
+#         [-DTRANS_ARGS=a@@b] [-DOUT_EXT=<j2c|jph>] [-DMODE=identical|close|reject]
 #         [-DIMGCMP=<imgcmp> -DPAE=<n> -DMSE=<x>] [-DPATTERN=<regex>]
 #         -P transcoder_roundtrip.cmake
 #
@@ -59,9 +59,14 @@ endif()
 # Decode the input.
 run_ok("decoding the input" "${DEC}" -i "${INPUT}" -o "${WORK}/ref.pgx")
 
+set(_targs "")
+if(DEFINED TRANS_ARGS)
+  string(REPLACE "@@" ";" _targs "${TRANS_ARGS}")
+endif()
+
 # Transcode with one and with two threads: the output must not depend on the thread count.
-run_ok("transcoding (1 thread)" "${TRANS}" -num_threads 1 -i "${INPUT}" -o "${WORK}/ht1.${OUT_EXT}")
-run_ok("transcoding (2 threads)" "${TRANS}" -num_threads 2 -i "${INPUT}" -o "${WORK}/ht2.${OUT_EXT}")
+run_ok("transcoding (1 thread)" "${TRANS}" ${_targs} -num_threads 1 -i "${INPUT}" -o "${WORK}/ht1.${OUT_EXT}")
+run_ok("transcoding (2 threads)" "${TRANS}" ${_targs} -num_threads 2 -i "${INPUT}" -o "${WORK}/ht2.${OUT_EXT}")
 execute_process(COMMAND ${CMAKE_COMMAND} -E compare_files "${WORK}/ht1.${OUT_EXT}" "${WORK}/ht2.${OUT_EXT}"
                 RESULT_VARIABLE same)
 if(NOT same EQUAL 0)
