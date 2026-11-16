@@ -42,6 +42,12 @@
 // input's PLT marker segments become PLT marker segments for the output's packets; its PLM, PPM,
 // POC, TLM and CPF marker segments are not carried over.
 //
+// Memory: the input and the output are held whole.  The tiles are transcoded one after the other,
+// and only the tile in hand has its structures, so memory is about the input, the output and one
+// tile (the whole image if it has one tile, which then takes about three to four times the input).
+// With transcode_options::input_padded the input is read where it is, else it is copied first.  A
+// codestream of 4 GB or more is not supported (the reader keeps 32-bit positions).
+//
 // The input is a raw codestream or a JP2/JPH file (found by its signature box).  With
 // transcode_options::jph_output the result is a JPH file: the boxes of a JP2 input (image header,
 // colour, resolution, XML, ...) are kept, the file type box gets the brand 'jph '; a raw codestream
@@ -103,6 +109,9 @@ enum class transcode_colour_space {
 };
 
 struct transcode_options {
+  // True if the 16 bytes after the input buffer (in + in_len) can be read.  The transcoder then reads the
+  // input where it is; else it takes a copy of it first, which costs memory the size of the input.
+  bool input_padded = false;
   transcode_colour_space jph_colour_space = transcode_colour_space::automatic;  // JPH output of a raw codestream
   transcode_layers layers               = transcode_layers::merge;
   transcode_partial_plane partial_plane = transcode_partial_plane::refine;

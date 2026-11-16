@@ -76,6 +76,13 @@ execute_process(COMMAND ${CMAKE_COMMAND} -E compare_files "${WORK}/ht1.${OUT_EXT
 if(NOT same EQUAL 0)
   message(FATAL_ERROR "the output depends on the number of threads")
 endif()
+# Reading the input where it is, or from a copy of it, gives the same output.
+run_ok("transcoding (input copied)" "${TRANS}" ${_targs} -copy_input -num_threads 1 -i "${INPUT}" -o "${WORK}/htc.${OUT_EXT}")
+execute_process(COMMAND ${CMAKE_COMMAND} -E compare_files "${WORK}/ht1.${OUT_EXT}" "${WORK}/htc.${OUT_EXT}"
+                RESULT_VARIABLE same_c)
+if(NOT same_c EQUAL 0)
+  message(FATAL_ERROR "the output depends on whether the input is copied")
+endif()
 
 # Decode the output and compare, file by file (one file per component).
 run_ok("decoding the transcoded file" "${DEC}" -i "${WORK}/ht1.${OUT_EXT}" -o "${WORK}/ht.pgx")

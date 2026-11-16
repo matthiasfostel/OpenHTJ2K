@@ -36,6 +36,7 @@
 #include <exception>
 #include <fstream>
 #include <iterator>
+#include <stdexcept>
 #include <string>
 #include <vector>
 #include "../print_library_messages.hpp"
@@ -53,6 +54,8 @@ static void usage(const char *prog) {
       "  -jph_color_space RGB|YCC  the colour space a .jph file declares for a raw codestream with\n"
       "      three or four components: RGB = sRGB (default), YCC = sYCC, for components that are Y,\n"
       "      Cb, Cr (as in open_htj2k_enc). Not for a JP2 input, whose own colour box is kept.\n"
+      "  -copy_input  the library copies the input before it reads it (memory the size of the input\n"
+      "      more; the output is the same). By default it reads the input where it is.\n"
       "  -partial refine|drop|keep  a code-block that the Part 1 encoder cut part-way through a\n"
       "      bit-plane: refine = code the block at its last complete cleanup plane plus HT\n"
       "      SigProp/MagRef passes for the partial one (default; exact), drop = code it at that\n"
@@ -67,6 +70,9 @@ static void usage(const char *prog) {
       "      set in the first layer the input had passes of it in: a decode of fewer layers shows\n"
       "      early blocks at full precision and later blocks missing (EXPERIMENTAL; a larger output\n"
       "      for the extra packet headers).\n"
+      "  Memory: the input and the output are held whole, and the tiles are transcoded one at a\n"
+      "  time, so a tiled image needs about the input plus the output plus one tile; an image of\n"
+      "  one tile needs three to four times the input. A codestream of 4 GB or more is refused.\n"
       "  PLM marker segments are not written; PLT ones are.\n"
       "  -h  this help\n",
       prog);
@@ -78,6 +84,7 @@ int main(int argc, char *argv[]) {
   open_htj2k::transcode_options opt;
   open_htj2k::transcode_stats stats;
   opt.stats = &stats;
+  bool copy_input = false;
   for (int i = 1; i < argc; ++i) {
     if (std::strcmp(argv[i], "-h") == 0 || std::strcmp(argv[i], "--help") == 0) {
       usage(argv[0]);
@@ -96,6 +103,8 @@ int main(int argc, char *argv[]) {
         std::printf("ERROR: -jph_color_space takes RGB or YCC, not %s\n", v);
         return EXIT_FAILURE;
       }
+    } else if (std::strcmp(argv[i], "-copy_input") == 0) {
+      copy_input = true;
     } else if (std::strcmp(argv[i], "-layers") == 0 && i + 1 < argc) {
       const char *v = argv[++i];
       if (std::strcmp(v, "keep") == 0) {
@@ -148,12 +157,27 @@ int main(int argc, char *argv[]) {
     std::printf("ERROR: cannot open %s\n", in_name.c_str());
     return EXIT_FAILURE;
   }
-  std::vector<uint8_t> in((std::istreambuf_iterator<char>(ifs)), std::istreambuf_iterator<char>());
+  // The file is read in one piece, into a buffer of its size (reading it through iterators would grow
+  // the buffer by doubling, and hold twice its size meanwhile).
+  std::vector<uint8_t> in;
+  try {
+    ifs.seekg(0, std::ios::end);
+    const std::streamoff file_size = ifs.tellg();
+    ifs.seekg(0, std::ios::beg);
+    if (file_size < 0) throw std::runtime_error("cannot get the size");
+    in.resize(static_cast<size_t>(file_size) + 16);  // 16 readable bytes after the file, for the transcoder
+    ifs.read(reinterpret_cast<char *>(in.data()), file_size);
+    if (!ifs) throw std::runtime_error("cannot read the whole file");
+  } catch (std::exception &exc) {
+    std::printf("ERROR: cannot read %s: %s\n", in_name.c_str(), exc.what());
+    return EXIT_FAILURE;
+  }
 
   std::vector<uint8_t> out;
   const auto t0 = std::chrono::high_resolution_clock::now();
   try {
-    open_htj2k::transcode_part1_to_htj2k(in.data(), in.size(), out, opt);
+    opt.input_padded = !copy_input;
+    open_htj2k::transcode_part1_to_htj2k(in.data(), in.size() - 16, out, opt);
   } catch (std::exception &exc) {
     std::printf("ERROR: transcoding failed: %s\n", exc.what());
     return EXIT_FAILURE;
@@ -168,8 +192,9 @@ int main(int argc, char *argv[]) {
   ofs.write(reinterpret_cast<const char *>(out.data()), static_cast<std::streamsize>(out.size()));
   ofs.close();
 
-  std::printf("Input (Part 1)   = %zu bytes\nOutput (HTJ2K)   = %zu bytes (%.1f%% of input)\n", in.size(),
-              out.size(), 100.0 * static_cast<double>(out.size()) / static_cast<double>(in.size()));
+  const size_t in_size = in.size() - 16;
+  std::printf("Input (Part 1)   = %zu bytes\nOutput (HTJ2K)   = %zu bytes (%.1f%% of input)\n", in_size,
+              out.size(), 100.0 * static_cast<double>(out.size()) / static_cast<double>(in_size));
   std::printf("Code-blocks with passes = %llu: %llu full, %llu cut after a cleanup pass above the LSB, %llu cut "
               "part-way through a bit-plane (%llu coded with HT refinement passes)\n",
               static_cast<unsigned long long>(stats.blocks), static_cast<unsigned long long>(stats.full),

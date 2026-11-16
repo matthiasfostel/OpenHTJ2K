@@ -333,13 +333,33 @@ void check_supported(const j2k_main_header &h) {
 }
 
 // Reads the main header of a codestream held in `in` (positioned on SOC).
-void read_main_header(j2c_src_memory &src, const uint8_t *data, size_t len, j2k_main_header &hdr) {
-  src.alloc_memory(len);
-  std::memcpy(src.get_buf_pos(), data, len);
+// With borrow the reader works on `data` itself (the caller guarantees the 16 bytes after it are
+// readable); else it takes a copy.
+void read_main_header(j2c_src_memory &src, const uint8_t *data, size_t len, j2k_main_header &hdr,
+                      bool borrow = false) {
+  if (borrow) {
+    src.borrow_memory(const_cast<uint8_t *>(data), len);
+  } else {
+    src.alloc_memory(len);
+    std::memcpy(src.get_buf_pos(), data, len);
+  }
   hdr.read(src);
   src.rewind_2bytes();
 }
 
+
+// The length of the main header of the codestream in data: up to and including the first SOT
+// marker code.  The whole length if no SOT is found (the header parser then reports the problem).
+size_t main_header_extent(const uint8_t *data, size_t len) {
+  size_t p = 2;  // after SOC
+  while (p + 2 <= len && data[p] == 0xFF) {
+    if (data[p + 1] == 0x90) return p + 2;                      // SOT
+    if (data[p + 1] >= 0x30 && data[p + 1] <= 0x3F) { p += 2; continue; }  // no length field
+    if (p + 4 > len) break;
+    p += 2 + ((static_cast<size_t>(data[p + 2]) << 8) | data[p + 3]);
+  }
+  return len;
+}
 
 uint32_t be32(const uint8_t *p) {
   return (uint32_t(p[0]) << 24) | (uint32_t(p[1]) << 16) | (uint32_t(p[2]) << 8) | uint32_t(p[3]);
@@ -403,6 +423,9 @@ size_t transcode_part1_to_htj2k(const uint8_t *in, size_t in_len, std::vector<ui
     in     = finfo.cs_data;
     in_len = finfo.cs_size;
   }
+  // The codestream reader keeps positions in 32 bits.
+  if (in_len > 0xFFFFFFFFull - 64)
+    open_htj2k::detail::fail("transcoder: a codestream of 4 GB or more is not supported.");
   if (in == nullptr || in_len < 4 || in[0] != 0xFF || in[1] != 0x4F) {
     open_htj2k::detail::fail("transcoder: the input is neither a JP2/JPH file nor a raw JPEG 2000 codestream.");
   }
@@ -410,7 +433,7 @@ size_t transcode_part1_to_htj2k(const uint8_t *in, size_t in_len, std::vector<ui
   // Input: main header and tiles with their packets parsed.  Nothing is decoded here.
   j2c_src_memory src;
   j2k_main_header hin;
-  read_main_header(src, in, in_len, hin);
+  read_main_header(src, in, in_len, hin, options.input_padded);
   check_supported(hin);
 
   element_siz numTiles;
@@ -418,16 +441,27 @@ size_t transcode_part1_to_htj2k(const uint8_t *in, size_t in_len, std::vector<ui
   const uint32_t num_tiles = numTiles.x * numTiles.y;
   if (num_tiles == 0 || num_tiles > 65535) open_htj2k::detail::fail("transcoder: bad number of tiles.");
 
-  std::vector<j2k_tile> tin(num_tiles);
-  for (uint32_t i = 0; i < num_tiles; ++i) tin[i].dec_init(static_cast<uint16_t>(i), hin, 0);
+  // Pass 1: where the tile-parts of each tile are.  Only their headers are read, so a tile costs
+  // nothing until its turn comes.  The tiles are then transcoded one after the other, and a tile's
+  // input and output structures are freed before the next one is built.
+  struct tile_part_loc {
+    uint32_t pos;    // read position of the SOT marker segment (after the marker code)
+    uint32_t index;  // the tile-part's place in the codestream (for PPM)
+  };
+  std::vector<std::vector<tile_part_loc>> tile_parts(num_tiles);
   {
     uint16_t word;
+    uint32_t count = 0;
     while (src.get_remaining() >= 2 && (word = src.get_word()) != _EOC) {
       if (word != _SOT) open_htj2k::detail::fail("transcoder: SOT marker segment expected but %04X is found", word);
+      const uint32_t at = src.get_pos();
       SOT_marker sot(src);
       const uint16_t ti = sot.get_tile_index();
       if (ti >= num_tiles) open_htj2k::detail::fail("transcoder: SOT tile index %u is out of range.", unsigned(ti));
-      tin[ti].add_tile_part(sot, src, hin);
+      j2k_tile_part part(hin.SIZ->get_num_components());
+      part.set_SOT(sot);
+      part.read(src);
+      tile_parts[ti].push_back({at, count++});
     }
   }
   // A tile with no tile-part in the input has no data to transcode.  It is left out of the output,
@@ -435,11 +469,9 @@ size_t transcode_part1_to_htj2k(const uint8_t *in, size_t in_len, std::vector<ui
   std::vector<uint8_t> present(num_tiles, 0);
   uint32_t num_present = 0;
   for (uint32_t i = 0; i < num_tiles; ++i) {
-    if (tin[i].first_tile_part_header() == nullptr) continue;
+    if (tile_parts[i].empty()) continue;
     present[i] = 1;
     ++num_present;
-    tin[i].line_based_decode = true;
-    tin[i].create_tile_buf(hin);
   }
   if (num_present == 0) open_htj2k::detail::fail("transcoder: the codestream has no tile-part.");
 
@@ -447,7 +479,8 @@ size_t transcode_part1_to_htj2k(const uint8_t *in, size_t in_len, std::vector<ui
   // segment.  It is parsed from the input again, to be changed without touching the input's.
   j2c_src_memory src2;
   j2k_main_header hout;
-  read_main_header(src2, in, in_len, hout);
+  // Only the header is read again, not the tile-parts after it.
+  read_main_header(src2, in, main_header_extent(in, in_len), hout);
   // CAP bit 5 (ISO/IEC 15444-15, A.3.6): 0 (HTREV) only when every component is reversible; a
   // codestream with an irreversible component, a mixed one included, is in the HTIRV set (8.7.2).
   // The transformation of a component is that of its COC if it has one, else that of the COD; a
@@ -458,7 +491,7 @@ size_t transcode_part1_to_htj2k(const uint8_t *in, size_t in_len, std::vector<ui
     if (c->get_component_index() < ncomp) main_rev[c->get_component_index()] = (c->get_transformation() == 1);
   bool reversible = true;
   for (uint8_t r : main_rev) reversible = reversible && (r != 0);
-  const auto NL0        = hout.COD->get_dwt_levels();
+  const auto NL0 = hout.COD->get_dwt_levels();
   hout.COD->set_Cmodes(static_cast<uint8_t>(HT));
   for (auto &c : hout.COC) c->set_Cmodes(static_cast<uint8_t>(HT));
   const bool keep_layers = (options.layers == transcode_layers::keep);
@@ -475,29 +508,108 @@ size_t transcode_part1_to_htj2k(const uint8_t *in, size_t in_len, std::vector<ui
   hout.ppm_buf.reset();
   hout.TLM.clear();
   hout.PLM.clear();
-  {
-    int32_t B = hout.QCD->get_MAGB(NL0);
-    for (const auto &q : hout.QCC) B = std::max<int32_t>(B, q->get_MAGB(NL0));
-    const auto bit5 = static_cast<uint16_t>(reversible ? 0 : 1);  // HTREV / HTIRV
-    hout.CAP       = std::unique_ptr<CAP_marker>(new CAP_marker());
-    hout.CAP->set_Ccap(static_cast<uint16_t>((bit5 << 5) | magb_field(B)), 15);
-  }
+  int32_t magb_main = hout.QCD->get_MAGB(NL0);
+  for (const auto &q : hout.QCC) magb_main = std::max<int32_t>(magb_main, q->get_MAGB(NL0));
+  hout.CAP = std::unique_ptr<CAP_marker>(new CAP_marker());
 
+  // The header's length does not depend on the values that are known at the end (the magnitude
+  // bound, the reversibility and the tile-part lengths), so the tile-parts are written after a
+  // header that is filled in then.
+  std::vector<uint16_t> tlm_indices;
+  if (num_tiles > 1) {
+    for (uint32_t i = 0; i < num_tiles; ++i)
+      if (present[i]) tlm_indices.push_back(static_cast<uint16_t>(i));
+  }
+  auto make_header = [&](const std::vector<uint32_t> &tlm_lengths, int32_t magb) {
+    hout.TLM.clear();
+    if (num_tiles > 1)
+      hout.TLM.push_back(
+          std::unique_ptr<TLM_marker>(new TLM_marker(static_cast<uint8_t>(0), tlm_indices, tlm_lengths)));
+    const auto bit5 = static_cast<uint16_t>(reversible ? 0 : 1);  // HTREV / HTIRV
+    hout.CAP->set_Ccap(static_cast<uint16_t>((bit5 << 5) | magb_field(magb)), 15);
+    j2c_dst_memory hdr_buf;
+    hdr_buf.put_word(_SOC);
+    hout.flush(hdr_buf);
+    std::vector<uint8_t> bytes;
+    hdr_buf.flush(&bytes);
+    return bytes;
+  };
+  const size_t hdr_len = make_header(std::vector<uint32_t>(tlm_indices.size(), 0), magb_main).size();
+
+  // JPH output: the boxes in front of the codestream and after it.  Those in front hold the
+  // codestream's length, which is known at the end; their own length is the same unless the
+  // codestream is longer than 4 GB, and they are made again then.
+  std::vector<uint8_t> file_mid, file_post;
+  if (options.jph_output && is_file) collect_file_boxes(file_in, file_len, file_mid, file_post);
+  auto make_pre = [&](size_t cs_len) {
+    std::vector<uint8_t> pre;
+    if (!options.jph_output) return pre;
+    if (is_file) {
+      j2c_dst_memory sig_buf;
+      signature_box sig;
+      file_type_box ftyp(1);  // brand 'jph '
+      sig.write(sig_buf);
+      ftyp.write(sig_buf);
+      sig_buf.flush(&pre);
+      pre.insert(pre.end(), file_mid.begin(), file_mid.end());
+      uint8_t jp2c[16];
+      const size_t n = jp2c_box_header(cs_len, jp2c);
+      pre.insert(pre.end(), jp2c, jp2c + n);
+    } else {
+      // A raw codestream: boxes made as the encoder makes them; sRGB for three or more
+      // components, grayscale otherwise.
+      const uint16_t nc = hout.SIZ->get_num_components();
+      if (options.jph_colour_space != transcode_colour_space::automatic && nc != 3 && nc != 4)
+        open_htj2k::detail::fail("transcoder: sRGB and sYCC are for three or four components, the image has %u.",
+                                 static_cast<unsigned>(nc));
+      const bool srgb = (options.jph_colour_space == transcode_colour_space::automatic)
+                            ? (nc >= 3)
+                            : (options.jph_colour_space == transcode_colour_space::rgb);
+      j2c_dst_memory box_buf;
+      jph_boxes boxes(hout, 1, srgb, cs_len);
+      boxes.write(box_buf);
+      box_buf.flush(&pre);
+    }
+    return pre;
+  };
+  const size_t pre_len = make_pre(hdr_len + 2).size();
+
+  // The output buffer; the boxes and the header are filled in at the end.
+  out.clear();
+  out.reserve(pre_len + in_len + in_len / 8 + hdr_len + (size_t(1) << 16));
+  out.resize(pre_len + hdr_len);
+
+  std::vector<uint32_t> tile_lengths;
+  int32_t magb_max = 0;
+  const std::vector<uint8_t> one_present(1, 1);
   std::vector<int32_t *> empty_buf;
-  std::unique_ptr<j2k_tile[]> tout(new j2k_tile[num_tiles]);
-  // The tile-part header bytes of each tile, and whether the input's tile-part had PLT marker
-  // segments (the output gets them for its own packets).
-  std::vector<std::vector<uint8_t>> tile_hdr_bytes(num_tiles);
-  std::vector<uint8_t> want_plt(num_tiles, 0);
+#ifdef OPENHTJ2K_THREAD
+  ThreadPoolLease pool_lease;
+  ThreadPool *pool = options.num_threads == 1 ? nullptr : ThreadPool::instance(options.num_threads);
+#endif
   for (uint32_t i = 0; i < num_tiles; ++i) {
     if (!present[i]) continue;
+    // The input tile, with its packets parsed.  Nothing is decoded here.
+    j2k_tile tin;
+    tin.dec_init(static_cast<uint16_t>(i), hin, 0);
+    for (const tile_part_loc &loc : tile_parts[i]) {
+      src.set_pos(loc.pos);
+      SOT_marker sot(src);
+      hin.num_tile_parts_read = loc.index;
+      tin.add_tile_part(sot, src, hin);
+    }
+    tin.line_based_decode = true;
+    tin.create_tile_buf(hin);
+
     // A COD, COC, QCD or QCC in the input's tile-part header is kept for the tile, with the HT
     // code-block style and one layer, and written in the tile-part header of the output.
     j2k_tilepart_header ov(hout.SIZ->get_num_components());
     bool has_override = false;
     // Comments of the input's tile-part header are kept in the output's.
     std::vector<COM_marker> tile_com;
-    if (const j2k_tilepart_header *th = tin[i].first_tile_part_header()) {
+    bool want_plt = false;
+    if (const j2k_tilepart_header *th = tin.first_tile_part_header()) {
+      want_plt = !th->PLT.empty();
       for (const auto &c : th->COM) tile_com.push_back(*c);
       if (th->COD != nullptr) {
         ov.COD = std::unique_ptr<COD_marker>(new COD_marker(*th->COD));
@@ -530,7 +642,9 @@ size_t transcode_part1_to_htj2k(const uint8_t *in, size_t in_len, std::vector<ui
         if (c->get_component_index() < ncomp) rev[c->get_component_index()] = (c->get_transformation() == 1);
       for (uint8_t r : rev) reversible = reversible && (r != 0);
     }
-    tout[i].enc_init(static_cast<uint16_t>(i), hout, empty_buf, true, true, has_override ? &ov : nullptr);
+    j2k_tile tout;
+    tout.enc_init(static_cast<uint16_t>(i), hout, empty_buf, true, true, has_override ? &ov : nullptr);
+    std::vector<uint8_t> tile_hdr_bytes;
     if (has_override || !tile_com.empty()) {
       j2c_dst_memory tb;
       if (ov.COD != nullptr) ov.COD->write(tb);
@@ -539,30 +653,20 @@ size_t transcode_part1_to_htj2k(const uint8_t *in, size_t in_len, std::vector<ui
       for (auto &q : ov.QCC) q->write(tb);
       for (auto &g : ov.RGN) g->write(tb);
       for (auto &c : tile_com) c.write(tb);
-      std::vector<uint8_t> bytes;
-      tb.flush(&bytes);
-      tile_hdr_bytes[i] = bytes;
-      tout[i].set_tile_part_header_bytes(std::move(bytes));
+      tb.flush(&tile_hdr_bytes);
+      tout.set_tile_part_header_bytes(tile_hdr_bytes);
     }
-    if (const j2k_tilepart_header *th = tin[i].first_tile_part_header()) want_plt[i] = !th->PLT.empty();
-  }
 
-  // Code-blocks.  Each block is independent, so they run on the thread pool in fixed chunks; every
-  // chunk has its own statistics, summed in chunk order, so the output does not depend on the
-  // number of threads.
-  {
-#ifdef OPENHTJ2K_THREAD
-    ThreadPoolLease pool_lease;
-    ThreadPool *pool = options.num_threads == 1 ? nullptr : ThreadPool::instance(options.num_threads);
-#endif
-    for (uint32_t i = 0; i < num_tiles; ++i) {
-      if (!present[i]) continue;
+    // Code-blocks.  Each block is independent, so they run on the thread pool in fixed chunks; every
+    // chunk has its own statistics, summed in chunk order, so the output does not depend on the
+    // number of threads.
+    {
       struct block_job {
         j2k_codeblock *in, *out;
         uint8_t roi;
       };
       std::vector<block_job> pairs;
-      for_each_block_pair(tin[i], tout[i],
+      for_each_block_pair(tin, tout,
                           [&](j2k_codeblock *bi, j2k_codeblock *bo, uint8_t roi) { pairs.push_back({bi, bo, roi}); });
       constexpr size_t CHUNK = 8;
       const size_t nchunks   = (pairs.size() + CHUNK - 1) / CHUNK;
@@ -628,86 +732,43 @@ size_t transcode_part1_to_htj2k(const uint8_t *in, size_t in_len, std::vector<ui
         stats.partial += cs.partial;
         stats.refined += cs.refined;
       }
-      tout[i].build_packet_headers();
-      if (want_plt[i]) {
-        std::vector<uint8_t> bytes = tile_hdr_bytes[i];
-        const std::vector<uint8_t> plt = plt_segments(tout[i].get_packet_lengths(hout));
+      tout.build_packet_headers();
+      if (want_plt) {
+        std::vector<uint8_t> bytes     = tile_hdr_bytes;
+        const std::vector<uint8_t> plt = plt_segments(tout.get_packet_lengths(hout));
         bytes.insert(bytes.end(), plt.begin(), plt.end());
-        tout[i].set_tile_part_header_bytes(std::move(bytes));
+        tout.set_tile_part_header_bytes(std::move(bytes));
       }
     }
+
+    // The tile-part goes to the end of the output; its input and output structures are freed.
+    magb_max = std::max(magb_max, coded_magb(&tout, 1, one_present));
+    const size_t tile_size = tout.get_tile_part_size();
+    const size_t at        = out.size();
+    out.resize(at + tile_size);
+    const size_t written = tout.write_packets_direct(hout, out.data() + at);
+    if (written != tile_size) open_htj2k::detail::fail("transcoder: a tile-part is shorter than its size.");
+    tile_lengths.push_back(static_cast<uint32_t>(tile_size));
   }
 
-  // The magnitude bound is known now.
+  // EOC, the boxes after the codestream, then the header and the boxes in front, now complete.
+  out.push_back(0xFF);
+  out.push_back(0xD9);
+  const size_t codestream_len = out.size() - pre_len;
+  out.insert(out.end(), file_post.begin(), file_post.end());
   {
-    const uint16_t bit5 = static_cast<uint16_t>(reversible ? 0 : 1);
-    hout.CAP->set_Ccap(static_cast<uint16_t>((bit5 << 5) | magb_field(coded_magb(tout.get(), num_tiles, present))), 15);
-  }
-  if (num_tiles > 1) {
-    std::vector<uint16_t> tile_indices;
-    std::vector<uint32_t> tile_lengths;
-    for (uint32_t i = 0; i < num_tiles; ++i) {
-      if (!present[i]) continue;
-      tile_indices.push_back(static_cast<uint16_t>(i));
-      tile_lengths.push_back(tout[i].get_tile_part_size());
-    }
-    hout.TLM.push_back(std::unique_ptr<TLM_marker>(new TLM_marker(static_cast<uint8_t>(0), tile_indices, tile_lengths)));
-  }
-
-  // SOC, main header, tile-parts, EOC.
-  j2c_dst_memory hdr_buf;
-  hdr_buf.put_word(_SOC);
-  hout.flush(hdr_buf);
-  size_t total = hdr_buf.get_length();
-  for (uint32_t i = 0; i < num_tiles; ++i) total += present[i] ? tout[i].get_tile_part_size() : 0;
-  total += 2;
-  std::vector<uint8_t> hdr_bytes;
-  hdr_buf.flush(&hdr_bytes);
-
-  // JPH output: the boxes in front of the codestream and after it.
-  std::vector<uint8_t> file_pre, file_post;
-  if (options.jph_output) {
-    if (is_file) {
-      j2c_dst_memory sig_buf;
-      signature_box sig;
-      file_type_box ftyp(1);  // brand 'jph '
-      sig.write(sig_buf);
-      ftyp.write(sig_buf);
-      sig_buf.flush(&file_pre);
-      std::vector<uint8_t> mid;
-      collect_file_boxes(file_in, file_len, mid, file_post);
-      file_pre.insert(file_pre.end(), mid.begin(), mid.end());
-      uint8_t jp2c[16];
-      const size_t n = jp2c_box_header(total, jp2c);
-      file_pre.insert(file_pre.end(), jp2c, jp2c + n);
+    const std::vector<uint8_t> hdr = make_header(tile_lengths, magb_max);
+    if (hdr.size() != hdr_len) open_htj2k::detail::fail("transcoder: the main header changed its length.");
+    std::memcpy(out.data() + pre_len, hdr.data(), hdr.size());
+    const std::vector<uint8_t> pre = make_pre(codestream_len);
+    if (pre.size() == pre_len) {
+      std::memcpy(out.data(), pre.data(), pre.size());
     } else {
-      // A raw codestream: boxes made as the encoder makes them; sRGB for three or more
-      // components, grayscale otherwise.
-      j2c_dst_memory box_buf;
-      const uint16_t nc = hout.SIZ->get_num_components();
-      if (options.jph_colour_space != transcode_colour_space::automatic && nc != 3 && nc != 4)
-        open_htj2k::detail::fail("transcoder: sRGB and sYCC are for three or four components, the image has %u.",
-                                 static_cast<unsigned>(nc));
-      const bool srgb = (options.jph_colour_space == transcode_colour_space::automatic) ? (nc >= 3)
-                                                                                         : (options.jph_colour_space == transcode_colour_space::rgb);
-      jph_boxes boxes(hout, 1, srgb, total);
-      boxes.write(box_buf);
-      box_buf.flush(&file_pre);
+      out.erase(out.begin(), out.begin() + static_cast<std::ptrdiff_t>(pre_len));
+      out.insert(out.begin(), pre.begin(), pre.end());
     }
   }
-  const size_t total_cs = total;
-  total += file_pre.size() + file_post.size();
-  out.resize(total);
-  std::memcpy(out.data(), file_pre.data(), file_pre.size());
-  uint8_t *p = out.data() + file_pre.size();
-  std::memcpy(p, hdr_bytes.data(), hdr_bytes.size());
-  p += hdr_bytes.size();
-  for (uint32_t i = 0; i < num_tiles; ++i) p += present[i] ? tout[i].write_packets_direct(hout, p) : 0;
-  p[0] = 0xFF;
-  p[1] = 0xD9;
-  p += 2;
-  std::memcpy(p, file_post.data(), file_post.size());
-  (void)total_cs;
+  const size_t total = out.size();
   if (options.stats != nullptr) *options.stats = stats;
   return total;
 }
