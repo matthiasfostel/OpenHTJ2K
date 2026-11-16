@@ -19,6 +19,9 @@ documents below are for offline browsing.
   reference and invocation examples.
 - [**cli_decoder.md**](cli_decoder.md) — `open_htj2k_dec` option
   reference and invocation examples.
+- [**cli_transcoder.md**](cli_transcoder.md) — `open_htj2k_transcode`
+  (experimental): Part 1 to HTJ2K in the coefficient domain; options,
+  what is kept and changed, size, memory and limits, library use.
 - [**cli_rtp_recv.md**](cli_rtp_recv.md) — `open_htj2k_rtp_recv`
   option reference, operational guide (kernel `rmem_max`), hardware
   requirements for 4K @ 60 fps, and known issues.

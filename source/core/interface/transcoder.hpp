@@ -60,9 +60,8 @@
 // the region; the HT decoder's own mid-point then leaves the result within about 2^-roi of a step per
 // coefficient of the image the Part 1 decoder gives (a few levels of 4095 at most in the tests).
 //
-// Prototype limits (the function throws, with a message, when the input has one):
-//   no RGN, DFS or ATK marker
-//   segments, Part 1 block coder input.
+// Limits (the function throws, with a message, when the input has one): the input must use the
+// Part 1 block coder (not HT), have no DFS or ATK marker segments (Part 2), and be less than 4 GB.
 
 #pragma once
 

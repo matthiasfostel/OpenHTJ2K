@@ -29,6 +29,21 @@ RTP receiver that sustains **4K @ 60 fps on modern x86-64**.
 - JPH (`.jph`) and JP2 (`.jp2`) file formats, including colour
   specification box parsing for automatic YCbCr colorspace detection.
 
+**Transcoding Part 1 to HTJ2K (new, experimental)**
+- `open_htj2k_transcode -i in.j2k -o out.j2c` converts a JPEG 2000 Part 1
+  codestream or JP2 file into HTJ2K, or `-o out.jph` into a JPH file,
+  without decoding the image: the code-blocks are decoded to their
+  quantisation indices and coded again with the HT block coder, with no
+  wavelet transform, re-quantisation or colour transform. A decoder
+  reconstructs the same image from the result as from the input.
+- Decoding the result is much faster: a 3840×2160 lossless RGB frame
+  decodes in 0.12 s from the HTJ2K file against 1.45 s from the Part 1
+  original (2 threads). The output is usually 100–110% of the input size.
+- Multi-threaded, one tile at a time for large tiled images, with marker
+  segments such as COC, POC, PPM, RGN and tile-part headers carried over.
+  The output was decoded and compared with OpenJPEG 2.5.4 as well as this
+  library. See [docs/cli_transcoder.md](docs/cli_transcoder.md).
+
 **Rate control: HTJ2K or Part 1 at a target size (new, experimental)**
 - `open_htj2k_enc -i in.ppm -o out.j2c -rate 1` makes a codestream of
   at most 1 bit per pixel, usually within a few bytes of it. Hitting a
@@ -222,6 +237,25 @@ Key flags: `-reduce n`, `-num_threads n`, `-ycbcr {bt601|bt709}`.
 Full reference:
 [**docs/cli_decoder.md**](docs/cli_decoder.md).
 
+### Transcoder — `open_htj2k_transcode` (experimental)
+
+Part 1 (EBCOT/MQ) to HTJ2K, in the coefficient domain. Inputs: `.j2c` /
+`.j2k` / `.jp2`. Outputs: `.j2c` / `.jhc` or `.jph`.
+
+```bash
+# Part 1 codestream to HTJ2K
+./build/bin/open_htj2k_transcode -i input.j2k -o out.j2c
+
+# JP2 file to JPH file (its colour, resolution and XML boxes are kept)
+./build/bin/open_htj2k_transcode -i input.jp2 -o out.jph
+```
+
+Key flags: `-partial {refine|drop|keep}`, `-layers {merge|keep}`,
+`-jph_color_space {RGB|YCC}`, `-num_threads N`. The output has one quality
+layer unless `-layers keep` is given; inputs with Part 2 DFS/ATK marker
+segments, HT inputs and codestreams of 4 GB or more are refused. Full
+reference: [**docs/cli_transcoder.md**](docs/cli_transcoder.md).
+
 ### RFC 9828 RTP receiver — `open_htj2k_rtp_recv` (experimental)
 
 Live HTJ2K over UDP per RFC 9828. Renders via GLFW / OpenGL 3.3
@@ -294,6 +328,7 @@ In-depth guides live under [`docs/`](docs/README.md):
 - [docs/building.md](docs/building.md) — full CMake flag reference, native build, WASM + Node.js CLI, RTP/JPIP prerequisites
 - [docs/cli_encoder.md](docs/cli_encoder.md) — `open_htj2k_enc` reference
 - [docs/cli_decoder.md](docs/cli_decoder.md) — `open_htj2k_dec` reference
+- [docs/cli_transcoder.md](docs/cli_transcoder.md) — `open_htj2k_transcode` reference (Part 1 to HTJ2K, experimental)
 - [docs/cli_rtp_recv.md](docs/cli_rtp_recv.md) — `open_htj2k_rtp_recv` reference + operational guide
 - [docs/jpip.md](docs/jpip.md) — JPIP subsystem reference (server, native + browser demos, benchmark, cache model, WASM API)
 - [docs/benchmarks.md](docs/benchmarks.md) — lossless speed against OpenJPEG: results, method, fixtures, the script
