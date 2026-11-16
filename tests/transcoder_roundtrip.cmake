@@ -41,7 +41,11 @@ if(DEFINED ENC_ARGS)
 endif()
 
 if(MODE STREQUAL "reject")
-  execute_process(COMMAND "${TRANS}" -i "${INPUT}" -o "${WORK}/out.${OUT_EXT}"
+  set(_rtargs "")
+  if(DEFINED TRANS_ARGS)
+    string(REPLACE "@@" ";" _rtargs "${TRANS_ARGS}")
+  endif()
+  execute_process(COMMAND "${TRANS}" ${_rtargs} -i "${INPUT}" -o "${WORK}/out.${OUT_EXT}"
                   RESULT_VARIABLE rc OUTPUT_VARIABLE out ERROR_VARIABLE err)
   # The tool reports errors on stdout and exits with failure; a crash gives a signal text instead.
   if(rc EQUAL 0)

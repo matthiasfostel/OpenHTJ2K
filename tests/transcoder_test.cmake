@@ -64,6 +64,30 @@ if(TARGET open_htj2k_transcode)
   tc_add(layers_keep_layers5 ENC_IN ${_K} ENC_ARGS "Cmodes=0@@-rate@@0.1,0.25,0.5,1,2" TRANS_ARGS "-layers@@keep")
   tc_add(layers_keep_all_modes_layers ENC_IN ${_K}
          ENC_ARGS "Cmodes=BYPASS|RESET|RESTART|CAUSAL|ERTERM|SEGMARK@@-rate@@0.25,0.5,1" TRANS_ARGS "-layers@@keep")
+  # The colour space of a JPH file made from a raw codestream: sRGB (EnumCS 16) by default, sYCC (18)
+  # on request; the options that make no sense are refused.
+  foreach(_v "default:" "ycc:-jph_color_space@@YCC" "rgb:-jph_color_space@@RGB")
+    string(REPLACE ":" ";" _p "${_v}")
+    list(GET _p 0 _n)
+    list(GET _p 1 _a)
+    if(_n STREQUAL "ycc")
+      set(_enum 00000012)
+    else()
+      set(_enum 00000010)
+    endif()
+    add_test(NAME tc_colour_${_n} COMMAND ${CMAKE_COMMAND} -DTRANS=$<TARGET_FILE:open_htj2k_transcode>
+             -DINPUT=${CONFORMANCE_DATA_DIR}/p0_04.j2k -DWORK=${_tc_work}/colour_${_n} -DOUT_EXT=jph
+             "-DTRANS_ARGS=${_a}" "-DHEX=636f6c72010000${_enum}"
+             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/transcoder_markers.cmake)
+    set_tests_properties(tc_colour_${_n} PROPERTIES LABELS transcoder)
+  endforeach()
+  tc_add(colour_ycc_j2c_refused INPUT ${CONFORMANCE_DATA_DIR}/p0_04.j2k MODE reject TRANS_ARGS "-jph_color_space@@YCC"
+         PATTERN "JPH output only")
+  tc_add(colour_ycc_grey_refused INPUT ${CONFORMANCE_DATA_DIR}/p0_01.j2k MODE reject OUT_EXT jph
+         TRANS_ARGS "-jph_color_space@@YCC" PATTERN "three or four components")
+  tc_add(colour_jp2_refused ENC_IN ${CMAKE_CURRENT_SOURCE_DIR}/conformance_data/references/kodim23.ppm
+         ENC_ARGS "Cmodes=0" ENC_EXT jp2 MODE reject OUT_EXT jph TRANS_ARGS "-jph_color_space@@YCC"
+         PATTERN "own colour specification")
   # Marker segments carried over: CRG (p0_03, main header), a COM in a tile-part header (p1_04, tile 29).
   add_test(NAME tc_keep_crg COMMAND ${CMAKE_COMMAND} -DTRANS=$<TARGET_FILE:open_htj2k_transcode>
            -DINPUT=${CONFORMANCE_DATA_DIR}/p0_03.j2k -DWORK=${_tc_work}/keep_crg "-DHEX=ff630006ff907f2e"

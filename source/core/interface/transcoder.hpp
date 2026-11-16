@@ -95,7 +95,15 @@ enum class transcode_layers {
           // precision and later blocks missing, never coarser
 };
 
+// The colour space a JPH file written for a raw codestream declares (its colour specification box).
+enum class transcode_colour_space {
+  automatic,  // sRGB for three or more components (default), greyscale for one or two
+  rgb,        // sRGB (three or four components: colour, then an optional alpha channel)
+  ycc         // sYCC, for components that are Y, Cb, Cr
+};
+
 struct transcode_options {
+  transcode_colour_space jph_colour_space = transcode_colour_space::automatic;  // JPH output of a raw codestream
   transcode_layers layers               = transcode_layers::merge;
   transcode_partial_plane partial_plane = transcode_partial_plane::refine;
   transcode_stats *stats                = nullptr;  // optional: receives the block statistics

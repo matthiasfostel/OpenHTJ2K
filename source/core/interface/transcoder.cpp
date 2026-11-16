@@ -392,6 +392,13 @@ size_t transcode_part1_to_htj2k(const uint8_t *in, size_t in_len, std::vector<ui
   const size_t file_len  = in_len;
   jph_info finfo;
   const bool is_file = (in != nullptr) && jph_parse_buffer(in, in_len, finfo);
+  if (options.jph_colour_space != transcode_colour_space::automatic) {
+    if (!options.jph_output) open_htj2k::detail::fail("transcoder: a colour space is for JPH output only.");
+    if (is_file)
+      open_htj2k::detail::fail(
+          "transcoder: the input file has its own colour specification, which is kept; a colour space is for a raw "
+          "codestream.");
+  }
   if (is_file) {
     in     = finfo.cs_data;
     in_len = finfo.cs_size;
@@ -677,7 +684,13 @@ size_t transcode_part1_to_htj2k(const uint8_t *in, size_t in_len, std::vector<ui
       // A raw codestream: boxes made as the encoder makes them; sRGB for three or more
       // components, grayscale otherwise.
       j2c_dst_memory box_buf;
-      jph_boxes boxes(hout, 1, hout.SIZ->get_num_components() >= 3, total);
+      const uint16_t nc = hout.SIZ->get_num_components();
+      if (options.jph_colour_space != transcode_colour_space::automatic && nc != 3 && nc != 4)
+        open_htj2k::detail::fail("transcoder: sRGB and sYCC are for three or four components, the image has %u.",
+                                 static_cast<unsigned>(nc));
+      const bool srgb = (options.jph_colour_space == transcode_colour_space::automatic) ? (nc >= 3)
+                                                                                         : (options.jph_colour_space == transcode_colour_space::rgb);
+      jph_boxes boxes(hout, 1, srgb, total);
       boxes.write(box_buf);
       box_buf.flush(&file_pre);
     }

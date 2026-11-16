@@ -50,6 +50,9 @@ static void usage(const char *prog) {
       "  -o  output: raw codestream (.j2c / .jhc) or JPH file (.jph). For a JP2 input the .jph file\n"
       "      keeps the boxes of the input (colour, resolution, XML, ...); for a raw codestream they\n"
       "      are made as open_htj2k_enc makes them (sRGB for 3 or more components, else grayscale)\n"
+      "  -jph_color_space RGB|YCC  the colour space a .jph file declares for a raw codestream with\n"
+      "      three or four components: RGB = sRGB (default), YCC = sYCC, for components that are Y,\n"
+      "      Cb, Cr (as in open_htj2k_enc). Not for a JP2 input, whose own colour box is kept.\n"
       "  -partial refine|drop|keep  a code-block that the Part 1 encoder cut part-way through a\n"
       "      bit-plane: refine = code the block at its last complete cleanup plane plus HT\n"
       "      SigProp/MagRef passes for the partial one (default; exact), drop = code it at that\n"
@@ -83,6 +86,16 @@ int main(int argc, char *argv[]) {
       in_name = argv[++i];
     } else if (std::strcmp(argv[i], "-o") == 0 && i + 1 < argc) {
       out_name = argv[++i];
+    } else if (std::strcmp(argv[i], "-jph_color_space") == 0 && i + 1 < argc) {
+      const char *v = argv[++i];
+      if (std::strcmp(v, "RGB") == 0) {
+        opt.jph_colour_space = open_htj2k::transcode_colour_space::rgb;
+      } else if (std::strcmp(v, "YCC") == 0) {
+        opt.jph_colour_space = open_htj2k::transcode_colour_space::ycc;
+      } else {
+        std::printf("ERROR: -jph_color_space takes RGB or YCC, not %s\n", v);
+        return EXIT_FAILURE;
+      }
     } else if (std::strcmp(argv[i], "-layers") == 0 && i + 1 < argc) {
       const char *v = argv[++i];
       if (std::strcmp(v, "keep") == 0) {
